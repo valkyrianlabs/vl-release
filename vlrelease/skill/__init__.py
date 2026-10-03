@@ -24,7 +24,6 @@ from importlib import resources
 from pathlib import Path
 from string import Template
 
-from vlrelease import __version__
 from vlrelease.config import Config
 from vlrelease.errors import ReleaseError
 from vlrelease.fsutil import atomic_write_text
@@ -33,8 +32,11 @@ SKILL_NAME = "vl-release"
 BASE_FILE = "SKILL.md"
 LOCAL_FILE = "PROJECT.md"
 FORMATS = {"claude": ".claude/skills", "agents": ".agents/skills"}
-BASE_MARKER = re.compile(r"<!-- vl-release:generated version=\S+ ")
-LOCAL_MARKER = re.compile(r"<!-- vl-release:generated-local version=\S+ ")
+# Markers identify generated files. They carry no tool version on purpose: a vl-release upgrade
+# (or this repository's own version bump) must not make an unchanged skill look stale.
+# The older `version=X.Y.Z` form is still recognized so those files are updated, not refused.
+BASE_MARKER = re.compile(r"<!-- vl-release:generated(?: version=\S+)? ")
+LOCAL_MARKER = re.compile(r"<!-- vl-release:generated-local(?: version=\S+)? ")
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ def _template(name: str) -> Template:
 
 
 def render_base_skill() -> str:
-    return _template("SKILL.md.in").substitute(tool_version=__version__)
+    return _template("SKILL.md.in").substitute()
 
 
 def _base_formats(root: Path, requested: str) -> list[str]:
@@ -144,7 +146,6 @@ def render_local_skill(config: Config) -> str:
         checks.append(" ".join(config.release.test_command))
     version_example = "X.Y.Z"
     return _template("PROJECT.md.in").substitute(
-        tool_version=__version__,
         project_name=config.project.name,
         staged_rows=staged_rows,
         notes=config.release.notes,

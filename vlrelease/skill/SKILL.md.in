@@ -2,7 +2,7 @@
 name: vl-release
 description: Release workflow and setup for repositories released with vl-release (`vlr`). Use when adopting vl-release in a repository (release.toml, `vlr init`), whenever a change affects users, operators, security, compatibility, packaging, deployment or other substantial behavior (to keep the staged release docs in .release/ current), and before touching versions, release history, packaging or release CI.
 ---
-<!-- vl-release:generated version=$tool_version -- regenerate with `vlr install-skill`; local edits are overwritten -->
+<!-- vl-release:generated -- regenerate with `vlr install-skill`; local edits are overwritten -->
 
 # vl-release
 

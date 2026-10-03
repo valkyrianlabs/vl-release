@@ -1,4 +1,4 @@
-<!-- vl-release:generated-local version=$tool_version -- regenerate with `vlr install-local-skill` after changing release.toml; local edits are overwritten -->
+<!-- vl-release:generated-local -- regenerate with `vlr install-local-skill` after changing release.toml; local edits are overwritten -->
 # $project_name: release specifics
 
 Generated from this repository's `release.toml`. The general workflow is in `SKILL.md`;

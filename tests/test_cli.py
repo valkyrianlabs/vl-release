@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tests.support import BASIC_CONFIG, DEBIAN_CONFIG, SOURCE_ROOT, RepoTestCase
@@ -178,7 +179,7 @@ class SkillTests(RepoTestCase):
         root = self.make_repo()
         base = install_skill(root)[0].path
         local = install_local_skill(self.config(root))[0].path
-        base.write_text(base.read_text().replace("generated version=", "generated version=0.0.0-old "))
+        base.write_text(base.read_text().replace("## 5. Versions", "## 5. Versions (edited)"))
         self.assertEqual(install_skill(root, check=True)[0].status, "stale")
         self.assertEqual(self.vlr("install-skill", "--check", cwd=root)[0], EXIT_FAILURE)
         self.assertEqual(install_skill(root)[0].status, "updated")
@@ -192,6 +193,23 @@ class SkillTests(RepoTestCase):
         self.assertEqual(install_local_skill(self.config(root))[0].status, "refused")
         self.assertEqual(local.read_text(), "# my notes\n")
         self.assertEqual(install_local_skill(self.config(root), force=True)[0].status, "updated")
+
+    def test_version_bumps_do_not_make_skills_stale(self) -> None:
+        root = self.make_repo(version="1.0.0")
+        install_skill(root)
+        install_local_skill(self.config(root))
+        self.vlr("version", "bump", "minor", cwd=root)
+        with mock.patch("vlrelease.__version__", "99.0.0"):
+            self.assertEqual(install_skill(root, check=True)[0].status, "unchanged")
+            self.assertEqual(install_local_skill(self.config(root), check=True)[0].status, "unchanged")
+
+    def test_legacy_versioned_marker_is_updated_not_refused(self) -> None:
+        root = self.make_repo()
+        path = install_skill(root)[0].path
+        path.write_text(path.read_text().replace("<!-- vl-release:generated -- ", "<!-- vl-release:generated version=0.1.1 -- "))
+        self.assertEqual(install_skill(root, check=True)[0].status, "stale")
+        self.assertEqual(install_skill(root)[0].status, "updated")
+        self.assertEqual(install_skill(root, check=True)[0].status, "unchanged")
 
     def test_check_warns_about_missing_skills(self) -> None:
         root = self.make_repo()
