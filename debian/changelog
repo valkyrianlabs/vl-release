@@ -1,3 +1,11 @@
+vl-release (0.1.3-1) unstable; urgency=medium
+
+  * Generated skill files no longer embed the vl-release version, so version
+    bumps and tool upgrades stop flagging an unchanged SKILL.md/PROJECT.md as
+    stale; files with the old versioned marker are still updated in place.
+
+ -- Valkyrian Labs <maintainers@valkyrianlabs.com>  Sat, 03 Oct 2026 18:06:13 +0000
+
 vl-release (0.1.2-1) unstable; urgency=medium
 
   * `vlr install-skill` installs the generic base skill and no longer requires

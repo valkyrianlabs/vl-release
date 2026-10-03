@@ -1,5 +1,15 @@
 # vl-release release notes
 
+<!-- vl-release:entry version=0.1.3 -->
+## 0.1.3 — No more stale-skill warnings after every release
+
+_Released 2026-10-03_
+
+`vlr check` used to report the agent skill and `PROJECT.md` as stale after every version bump or
+vl-release upgrade, even when nothing in them had changed. Skills are now only stale when their
+content actually differs. Run `vlr install-skill` and `vlr install-local-skill` once to switch
+existing files to the new format.
+
 <!-- vl-release:entry version=0.1.2 -->
 ## 0.1.2 — Agent skills that work before a repository is set up
 
