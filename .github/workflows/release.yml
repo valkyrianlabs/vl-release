@@ -1,0 +1,278 @@
+# Release vl-release with vl-release.
+#
+#   vlr cut patch|minor|major --push      (locally) -> pushes vX.Y.Z -> this workflow
+#
+# build ─▶ homebrew-check ─▶ publish-apt ─▶ github-release ─▶ homebrew-tap ─▶ finalize
+#
+# Every job checks out the release tag and runs vlr from that checkout (python3 -m vlrelease via
+# bin/), so the tool always releases itself with its own code. `vlr prepare` is deterministic,
+# so later jobs re-run it and get byte-identical documents; `finalize --record` proves it.
+# Nothing is written back to the repository unless every publication step succeeded.
+#
+# Configuration (all names are the ValkyrianLabs organization-level ones):
+#   secrets.NEXUS_USER, secrets.NEXUS_PASSWORD   Nexus upload credentials (org secrets)
+#   vars.NEXUS_APT_REPO                          Nexus APT upload URL, e.g. https://apt.valkyrianlabs.com (org variable)
+#   secrets.HOMEBREW_TAP_TOKEN                   push access to valkyrianlabs/homebrew-tap
+#   vars.RELEASE_PUBLISH_MODE   (optional)       `nexus` (default here) or `disabled`
+#   vars.RELEASE_RUNNER         (optional)       JSON runner spec for publishing jobs, e.g. '["self-hosted","Linux"]'
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Release tag (e.g. v0.1.0)
+        required: true
+        type: string
+      publish:
+        description: Publish, or rehearse everything without publishing
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, publish]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_REF: ${{ github.event.inputs.ref || github.ref }}
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  build:
+    name: Prepare, build and validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.state.outputs.version }}
+      tag: ${{ steps.state.outputs.tag }}
+      debian_version: ${{ steps.state.outputs.debian_version }}
+      publish: ${{ steps.mode.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Use vl-release from the release checkout
+        run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - name: Publication mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.publish }}" = "publish" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Release gate
+        run: vlr check --release --tag "${RELEASE_REF#refs/tags/}"
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev debhelper dh-python ruby
+
+      - name: Prepare release documents (work tree only)
+        run: vlr prepare --record release/meta/prepare.json
+
+      - name: Release state
+        id: state
+        run: vlr status --github-output
+
+      - name: Build artifacts from the prepared work tree
+        run: |
+          set -euo pipefail
+          vlr build-deb
+          vlr source-archive
+          vlr homebrew formula
+          vlr checksums
+          vlr validate-artifacts
+          vlr artifacts
+
+      - name: Smoke-test the installed package
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./release/vl-release_*_all.deb
+          test "$(/usr/bin/vl-release --version)" = "vl-release ${{ steps.state.outputs.version }}"
+          /usr/bin/vlr --repo "$GITHUB_WORKSPACE" check
+          /usr/bin/vlr doctor
+
+      # Read-only: plans against the live index and fails now if this version was already published
+      # with different bytes, before anything is published anywhere.
+      - name: Plan APT publication
+        run: vlr publish-deb --mode nexus --dry-run
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vl-release-${{ steps.state.outputs.version }}
+          path: release
+          if-no-files-found: error
+
+  homebrew-check:
+    name: Homebrew formula install (macOS)
+    runs-on: macos-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - name: Install the release formula from a local tap and run its test block
+        run: bash .github/scripts/homebrew-local-install.sh
+
+  publish-apt:
+    name: Publish to the ValkyrianLabs APT repository
+    runs-on: ${{ fromJSON(vars.RELEASE_RUNNER || '"ubuntu-latest"') }}
+    needs: [build, homebrew-check]
+    if: needs.build.outputs.publish == 'true'
+    environment: Production
+    env:
+      RELEASE_PUBLISH_MODE: ${{ vars.RELEASE_PUBLISH_MODE || 'nexus' }}
+      NEXUS_APT_REPO: ${{ vars.NEXUS_APT_REPO }}
+      NEXUS_USER: ${{ secrets.NEXUS_USER }}
+      NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vl-release-${{ needs.build.outputs.version }}
+          path: release
+
+      # Upload (or skip if identical bytes are already published), then poll the index until the
+      # package is listed with the expected sha256.
+      - name: Publish and verify
+        run: vlr publish-deb --require-enabled
+
+      - name: Install from the APT repository
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://apt.valkyrianlabs.com/pubkey.gpg -o valkyrianlabs.gpg
+          sudo install -m 0644 valkyrianlabs.gpg /etc/apt/keyrings/valkyrianlabs.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/valkyrianlabs.gpg] https://apt.valkyrianlabs.com stable main" \
+            | sudo tee /etc/apt/sources.list.d/valkyrianlabs.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y "vl-release=${{ needs.build.outputs.debian_version }}"
+          test "$(/usr/bin/vl-release --version)" = "vl-release ${{ needs.build.outputs.version }}"
+
+  github-release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    needs: [build, publish-apt]
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vl-release-${{ needs.build.outputs.version }}
+          path: release
+
+      - name: Create or update the release (title/body from the prepared notes; assets immutable)
+        run: |
+          vlr prepare
+          vlr github-release
+
+  homebrew-tap:
+    name: Homebrew tap
+    runs-on: ubuntu-latest
+    needs: [build, github-release]
+    environment: Production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vl-release-${{ needs.build.outputs.version }}
+          path: release
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: valkyrianlabs/homebrew-tap
+          ref: main
+          path: homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # Downloads the formula's url (the GitHub release asset) and checks its sha256 before
+      # committing; refuses to change a formula version that is already published.
+      - name: Publish the formula
+        run: |
+          vlr prepare
+          vlr homebrew publish --tap-dir homebrew-tap
+
+  finalize:
+    name: Record the release on main
+    runs-on: ubuntu-latest
+    needs: [build, publish-apt, github-release, homebrew-tap]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vl-release-${{ needs.build.outputs.version }}
+          path: release
+
+      # Re-prepare (deterministic), prove it matches what was built and published, then commit the
+      # promoted history + cleared staging files onto main. A no-op if main already records it.
+      - name: Finalize
+        run: |
+          vlr prepare
+          vlr finalize --record release/meta/prepare.json
