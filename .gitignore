@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+/.venv/
+
+# vl-release build tree and release output (never written outside the project)
+/build/
+/release/
+
+# Debian build leftovers (dpkg-buildpackage runs in build/deb/src, but keep the tree clean
+# if someone builds in place)
+/debian/.debhelper/
+/debian/vl-release/
+/debian/files
+/debian/*.substvars
+/debian/*.log
+/debian/debhelper-build-stamp

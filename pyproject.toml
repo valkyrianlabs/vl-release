@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vl-release"
+dynamic = ["version"]
+description = "Deterministic release toolkit for Valkyrian Labs projects"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Valkyrian Labs", email = "maintainers@valkyrianlabs.com" }]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/valkyrianlabs/vl-release"
+
+[project.scripts]
+vl-release = "vlrelease.cli:main"
+vlr = "vlrelease.cli:main"
+
+[tool.setuptools]
+packages = ["vlrelease", "vlrelease.skill"]
+
+[tool.setuptools.package-data]
+"vlrelease.skill" = ["SKILL.md.in"]
+
+[tool.setuptools.dynamic]
+version = { attr = "vlrelease.__version__" }
