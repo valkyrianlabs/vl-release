@@ -80,7 +80,7 @@ jobs:
         run: vlr check --release --tag "${RELEASE_REF#refs/tags/}"
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev debhelper dh-python ruby
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential dpkg-dev debhelper dh-python ruby
 
       - name: Prepare release documents (work tree only)
         run: vlr prepare --record release/meta/prepare.json

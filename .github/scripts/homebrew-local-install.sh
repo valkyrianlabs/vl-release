@@ -10,12 +10,17 @@ formula="$(vlr homebrew formula --json | python3 -c 'import json,sys; print(json
 version="$(vlr version show)"
 archive="$PWD/release/vl-release-${version}.tar.gz"
 
-brew style "$formula"
-
 tap="vlr-ci/local"
 brew untap "$tap" >/dev/null 2>&1 || true
 brew tap-new --no-git "$tap"
 tap_formula="$(brew --repository "$tap")/Formula/vl-release.rb"
+
+# Style-check the exact formula that will be published, as a tap formula (a bare file path would
+# be checked against Homebrew's own core-code rules instead).
+cp "$formula" "$tap_formula"
+brew style "$tap/vl-release"
+
+# Then install it from the locally built archive and run its test block.
 sed -E "s#^  url \".*\"#  url \"file://${archive}\"#" "$formula" > "$tap_formula"
 
 export HOMEBREW_NO_INSTALL_FROM_API=1 HOMEBREW_NO_AUTO_UPDATE=1
