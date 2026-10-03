@@ -163,7 +163,8 @@ def discover_root(repo: str | os.PathLike[str] | None, cwd: Path | None = None) 
     start = Path(repo).expanduser() if repo is not None else (cwd or Path.cwd())
     if not start.exists():
         raise ConfigError(f"--repo path does not exist: {start}")
-    root = find_repo_root(start.resolve())
+    resolved = start.resolve()
+    root = find_repo_root(resolved if resolved.is_dir() else resolved.parent)
     if root is None:
         where = f"--repo {start}" if repo is not None else f"the current directory ({start})"
         raise ConfigError(f"{where} is not inside a Git repository; vl-release operates on a Git work tree.")

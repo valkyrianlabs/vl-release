@@ -76,16 +76,23 @@ def parse_top_entry(text: str, *, source: str = "debian/changelog") -> DebianEnt
     raise DebianChangelogError(f"{source}: the top entry has no ' -- maintainer  date' trailer line")
 
 
+_CODE_SPAN = re.compile(r"`[^`]*`")
+_NBSP = "\x00"
+
+
 def render_body(sections: list[ChangelogSection]) -> list[str]:
     def wrap(text: str, first: str, rest: str) -> list[str]:
-        return textwrap.wrap(
-            text,
+        # Inline code spans are never split across lines.
+        protected = _CODE_SPAN.sub(lambda m: m.group(0).replace(" ", _NBSP), text)
+        lines = textwrap.wrap(
+            protected,
             width=WRAP_WIDTH,
             initial_indent=first,
             subsequent_indent=rest,
             break_long_words=False,
             break_on_hyphens=False,
         ) or [first.rstrip()]
+        return [line.replace(_NBSP, " ") for line in lines]
 
     lines: list[str] = []
     grouped = any(section.heading for section in sections)

@@ -33,7 +33,7 @@ from vlrelease.targets import (
 )
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-_SEMVER_IN_TEXT = re.compile(r"(?<![\d.])\d+\.\d+\.\d+(?![\d.])")
+_SEMVER_IN_TEXT = re.compile(r"(?<![\d.])\d+\.\d+\.\d+(?!\.?\d)")
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 

@@ -33,7 +33,7 @@ HOMEBREW_SHA256_PATTERN = re.compile(
 HOMEBREW_VERSION_PATTERN = re.compile(
     r"""^(?P<prefix>\s*version\s+["'])(?P<version>[^"']+)(?P<suffix>["'])""", re.MULTILINE
 )
-_SEMVER_IN_TEXT = re.compile(r"(?<![\d.])\d+\.\d+\.\d+(?![\d.])")
+_SEMVER_IN_TEXT = re.compile(r"(?<![\d.])\d+\.\d+\.\d+(?!\.?\d)")
 
 
 class TargetError(ValueError):
