@@ -161,6 +161,23 @@ class CutTests(RemoteTestCase):
         with self.assertRaisesRegex(ReleaseError, "already exists on origin"):
             cut_release(self.config(root), "1.3.0", push=True, log=lambda _l: None)
 
+    def test_cut_releases_the_current_unreleased_version(self) -> None:
+        root, bare = self.with_remote(version="0.1.0")
+        head = git(root, "rev-parse", "HEAD")
+        result = cut_release(self.config(root), "0.1.0", push=True, log=lambda _l: None)
+        self.assertEqual((result.version, result.commit), ("0.1.0", head))
+        self.assertIn("version: 0.1.0 is already set and unreleased; tagging HEAD", result.actions)
+        self.assertEqual(git(bare, "rev-parse", "v0.1.0^{commit}"), head)
+        self.assertEqual(git(bare, "log", "-1", "--format=%s", "main"), "initial")
+
+    def test_cut_current_version_refused_once_released(self) -> None:
+        root, _bare = self.with_remote(version="0.1.0")
+        cut_release(self.config(root), "0.1.0", push=True, log=lambda _l: None)
+        with self.assertRaisesRegex(ReleaseError, "already exists on origin"):
+            cut_release(self.config(root), "0.1.0", push=True, log=lambda _l: None)
+        with self.assertRaisesRegex(ReleaseError, "older than the current version"):
+            cut_release(self.config(root), "0.0.9", log=lambda _l: None)
+
     def test_failing_tests_block_the_cut(self) -> None:
         config_text = DEBIAN_CONFIG + '\n[release]\ntest_command = ["false"]\n'
         root = self.make_repo(config=config_text, debian=True, version="1.2.0", name="tested")
