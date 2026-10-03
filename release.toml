@@ -49,7 +49,7 @@ name = "{package}-{version}.tar.gz"
 repository_url = "https://apt.valkyrianlabs.com"
 suite = "stable"
 components = ["main"]
-architectures = ["amd64"]
+architectures = ["amd64", "all"]   # Nexus lists Architecture: all packages in binary-all
 
 [homebrew]
 formula = "packaging/homebrew/vl-release.rb"
