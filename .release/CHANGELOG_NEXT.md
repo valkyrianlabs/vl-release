@@ -19,9 +19,11 @@ One level of nested "  - " detail bullets is allowed. Consolidate; don't paste c
 - Isolated Debian builds under build/deb (nothing is written outside the
   project), package-contract validation, SHA256SUMS and reproducible source
   archives built from the prepared work tree.
-- Integrity-checked APT publication to Nexus (credentials never on argv,
-  identical re-uploads skipped, different bytes for a published version
-  refused) with index verification and polling.
+- Integrity-checked APT publication to Nexus using the organization-level
+  NEXUS_APT_REPO/NEXUS_USER/NEXUS_PASSWORD (legacy NEXUS_REPO_URL/NEXUS_PASS
+  accepted): credentials never on argv, identical re-uploads skipped,
+  different bytes for a published version refused, index verified and polled.
+  `publish-deb --dry-run` plans against the public index without credentials.
 - Idempotent GitHub releases, Homebrew formula rendering and tap publication,
   `vlr cut` and the post-publication `vlr finalize` backcommit.
 - `vlr install-skill` installs the repository-local agent skill.
