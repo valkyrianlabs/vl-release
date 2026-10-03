@@ -1,3 +1,18 @@
+vl-release (0.1.2-1) unstable; urgency=medium
+
+  * `vlr install-skill` installs the generic base skill and no longer requires
+    release.toml; the skill now covers adopting vl-release (`vlr init`, filling
+    in release.toml, asking before choosing publication targets).
+  * New `vlr install-local-skill` writes PROJECT.md next to the installed skill
+    with the repository's specifics rendered from release.toml; `vlr check`
+    warns when the skill or PROJECT.md is missing or stale.
+  * New `vlr help config|staging|ci`: the release.toml, staging-format and CI
+    references ship inside the package and work offline.
+  * `vlr cut X.Y.Z` releases the version already in the version file when it
+    was never tagged or recorded, instead of refusing (first releases).
+
+ -- Valkyrian Labs <maintainers@valkyrianlabs.com>  Sat, 03 Oct 2026 18:00:46 +0000
+
 vl-release (0.1.1-1) unstable; urgency=medium
 
   * Initial release of vl-release (`vl-release`/`vlr`), the shared
