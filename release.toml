@@ -32,6 +32,8 @@ required_paths = [
   "usr/bin/vlr",
   "usr/lib/python3/dist-packages/vlrelease/cli.py",
   "usr/lib/python3/dist-packages/vlrelease/skill/SKILL.md.in",
+  "usr/lib/python3/dist-packages/vlrelease/skill/PROJECT.md.in",
+  "usr/lib/python3/dist-packages/vlrelease/docs/config.md",
   "usr/share/doc/vl-release/README.md",
   "usr/share/doc/vl-release/RELEASE_NOTES.md",
 ]

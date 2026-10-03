@@ -20,10 +20,11 @@ vl-release = "vlrelease.cli:main"
 vlr = "vlrelease.cli:main"
 
 [tool.setuptools]
-packages = ["vlrelease", "vlrelease.skill"]
+packages = ["vlrelease", "vlrelease.skill", "vlrelease.docs"]
 
 [tool.setuptools.package-data]
-"vlrelease.skill" = ["SKILL.md.in"]
+"vlrelease.skill" = ["SKILL.md.in", "PROJECT.md.in"]
+"vlrelease.docs" = ["*.md"]
 
 [tool.setuptools.dynamic]
 version = { attr = "vlrelease.__version__" }

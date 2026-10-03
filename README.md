@@ -37,7 +37,7 @@ A broken installed package therefore never prevents building its own fix.
 ## The repository contract
 
 ```
-release.toml                     the per-repository configuration (see docs/release-toml.md)
+release.toml                     the per-repository configuration (`vlr help config`)
 .release/CHANGELOG_NEXT.md       staged package-facing changes (when [debian] is enabled)
 .release/RELEASE_NOTES_NEXT.md   staged user-facing release notes
 RELEASE_NOTES.md                 published release-notes history (written by vlr prepare)
@@ -47,9 +47,18 @@ debian/changelog                 published Debian history (written by vlr prepar
 `.release/` is tracked. `_NEXT` files are the mutable state of unreleased work; the history
 files are the record of what was published. Agents edit the former, never the latter.
 
-Bootstrap a repository with `vlr init`, review `release.toml`, then `vlr install-skill` to give
-coding agents the workflow (`.claude/skills/vl-release/SKILL.md`, and `.agents/skills/…` when
-the repository uses that convention).
+Adopting vl-release in a repository:
+
+1. `vlr install-skill` installs the generic agent skill (`.claude/skills/vl-release/SKILL.md`, plus
+   `.agents/skills/…` when the repository uses that convention). It needs no configuration and
+   teaches an agent how to set the repository up.
+2. `vlr init` scaffolds `release.toml` and `.release/`; fill it in (`vlr help config`) until
+   `vlr check` passes.
+3. `vlr install-local-skill` adds `PROJECT.md` next to the skill: this repository's paths, version
+   targets, channels and checks, rendered from `release.toml`. Re-run it after changing the config
+   (`vlr check` warns when it is stale).
+
+Offline references ship with the tool: `vlr help config`, `vlr help staging`, `vlr help ci`.
 
 ### Staged documents
 
@@ -94,7 +103,8 @@ HTML comments are ignored, so the reset templates are pure guidance. Placeholder
 | `vlr github-release` | Create/update the GitHub release and upload assets (idempotent) |
 | `vlr cut patch\|minor\|major\|X.Y.Z [--push]` | Bump, commit, annotated tag, atomic push (resumable) |
 | `vlr finalize [--record FILE]` | After publication: commit the promoted history + cleared `_NEXT` to the branch |
-| `vlr install-skill [--format auto\|all\|claude\|agents] [--check]` | Install/update the repo-local agent skill |
+| `vlr install-skill` / `vlr install-local-skill` | Generic agent skill / this repository's `PROJECT.md` |
+| `vlr help config\|staging\|ci` | Offline references |
 | `vlr init` / `vlr doctor` | Scaffold the contract files / check the toolchain (works anywhere) |
 
 Every project command discovers the Git root from the current directory (or `--repo PATH`) and
@@ -149,7 +159,7 @@ Publishing is boring and unforgiving:
 
 ## CI
 
-See [docs/ci.md](docs/ci.md) and this repository's own
+See `vlr help ci` ([vlrelease/docs/ci.md](vlrelease/docs/ci.md)) and this repository's own
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which releases vl-release with
 vl-release.
 
