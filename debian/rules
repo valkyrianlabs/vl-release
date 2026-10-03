@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+# Pure Python, architecture-independent. The package is assembled with dh_install; dh_python3
+# handles byte-compilation and the python3 dependency.
+
+%:
+	dh $@ --with python3
+
+override_dh_auto_build:
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	python3 -m unittest discover -s tests -t .
+endif
+
+override_dh_auto_install:
+
+override_dh_install:
+	dh_install
+	find debian/vl-release -name __pycache__ -prune -exec rm -rf {} +
+
+# Keep Markdown docs uncompressed so the shipped RELEASE_NOTES.md stays byte-identical
+# to the prepared work tree (checked by `vlr validate-artifacts`).
+override_dh_compress:
+	dh_compress -X.md

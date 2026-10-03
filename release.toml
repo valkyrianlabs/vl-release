@@ -1,0 +1,58 @@
+# vl-release's own release contract (dogfood): this repository releases itself with vlr.
+schema_version = 1
+
+[tool]
+requires = ">=0.1,<1"
+
+[project]
+name = "vl-release"
+package = "vl-release"
+repository = "valkyrianlabs/vl-release"
+
+[version]
+canonical = "VERSION"
+targets = [
+  { kind = "regex", path = "vlrelease/__init__.py", pattern = '__version__ = "(?P<version>[^"]+)"' },
+]
+
+[release]
+branch = "main"
+test_command = ["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
+
+[debian]
+distribution = "unstable"
+urgency = "medium"
+maintainer = "Valkyrian Labs <maintainers@valkyrianlabs.com>"
+
+[[debian.packages]]
+name = "vl-release"
+architecture = "all"
+required_paths = [
+  "usr/bin/vl-release",
+  "usr/bin/vlr",
+  "usr/lib/python3/dist-packages/vlrelease/cli.py",
+  "usr/lib/python3/dist-packages/vlrelease/skill/SKILL.md.in",
+  "usr/share/doc/vl-release/README.md",
+  "usr/share/doc/vl-release/RELEASE_NOTES.md",
+]
+forbidden_paths = ["*__pycache__*", "*.pyc", "usr/lib/python3/dist-packages/tests*"]
+identical_files = [
+  { member = "usr/share/doc/vl-release/RELEASE_NOTES.md", source = "RELEASE_NOTES.md" },
+  { member = "usr/lib/python3/dist-packages/vlrelease/__init__.py", source = "vlrelease/__init__.py" },
+]
+
+# The Homebrew formula installs from this reproducible archive of the prepared tree.
+[source_archive]
+name = "{package}-{version}.tar.gz"
+
+[publish.apt]
+repository_url = "https://apt.valkyrianlabs.com"
+suite = "stable"
+components = ["main"]
+architectures = ["amd64"]
+
+[homebrew]
+formula = "packaging/homebrew/vl-release.rb"
+tap = "valkyrianlabs/homebrew-tap"
+tap_path = "Formula/vl-release.rb"
+source = "release-asset"

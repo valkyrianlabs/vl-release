@@ -1,0 +1,32 @@
+Source: vl-release
+Section: devel
+Priority: optional
+Maintainer: Valkyrian Labs <maintainers@valkyrianlabs.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ git,
+ python3:any (>= 3.11),
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/valkyrianlabs/vl-release
+
+Package: vl-release
+Architecture: all
+Depends:
+ git,
+ python3 (>= 3.11),
+ ${misc:Depends},
+ ${python3:Depends},
+Recommends:
+ curl,
+ dpkg-dev,
+Suggests:
+ gh,
+Description: deterministic release toolkit for Valkyrian Labs projects
+ vl-release (also available as vlr) manages the release contract of a Git
+ repository: version consistency across files, agent-maintained staged
+ release documentation and its deterministic promotion into the published
+ history, Debian package builds and contract validation, reproducible source
+ archives, integrity-checked APT publication and verification, GitHub
+ releases, and Homebrew tap formulas.
