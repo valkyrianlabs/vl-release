@@ -113,11 +113,13 @@ def cut_release(
     else:
         if head != remote_head:
             raise ReleaseError(f"{branch} is not in sync with {remote}/{branch}; push or pull first.")
-        if version <= current:
-            raise ReleaseError(f"Target {version} must be greater than the current version {current}.")
+        if version < current:
+            raise ReleaseError(f"Target {version} is older than the current version {current}.")
         state = read_release_state(config)
         if state.last_recorded is not None and version <= state.last_recorded:
             raise ReleaseError(f"Target {version} is not newer than the last recorded release {state.last_recorded}.")
+        # version == current is allowed: it was never tagged (checked above) nor recorded, so
+        # releasing it just tags HEAD (e.g. the first release of a freshly set-up repository).
         _require_staged_docs(config)
         actions.append("check: version targets consistent; staged release docs present")
         if config.release.test_command and not skip_tests:
@@ -126,14 +128,18 @@ def cut_release(
             if runner(list(config.release.test_command)) != 0:
                 raise ReleaseError("release.test_command failed; not cutting a release.")
             actions.append("tests: passed")
-        changed = apply_version(config, version)
-        if not changed:
-            raise ReleaseError(f"Setting {version} changed no files")
-        run_git(["add", "--", *changed], cwd=root)
-        message = config.release.cut_commit_message.format(version=version, tag=tag, name=config.project.name)
-        run_git(["commit", "-q", "-m", message], cwd=root)
+        if version == current:
+            actions.append(f"version: {version} is already set and unreleased; tagging HEAD")
+        else:
+            changed = apply_version(config, version)
+            if not changed:
+                raise ReleaseError(f"Setting {version} changed no files")
+            run_git(["add", "--", *changed], cwd=root)
+            message = config.release.cut_commit_message.format(version=version, tag=tag, name=config.project.name)
+            run_git(["commit", "-q", "-m", message], cwd=root)
+            actions.append(f"commit: {message}")
         run_git(["tag", "-a", tag, "-m", f"{config.project.name} {tag}"], cwd=root)
-        actions += [f"commit: {message}", f"tag: {tag}"]
+        actions.append(f"tag: {tag}")
 
     commit = rev(root, "HEAD") or ""
     if not push:
