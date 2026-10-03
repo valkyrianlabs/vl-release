@@ -1,10 +1,17 @@
-"""`vlr install-skill`: install the repository-local agent skill describing this workflow.
+"""Agent skills.
+
+`vlr install-skill` installs the generic base skill (`SKILL.md`): what vl-release is, how to set
+a repository up (`vlr init`, `release.toml`), the development workflow and releasing. It needs
+only a Git repository, so it is the first thing installed when adopting vl-release.
+
+`vlr install-local-skill` extends an installed base skill with `PROJECT.md`, rendered from the
+repository's `release.toml` (paths, version targets, channels, contracts, checks). The base skill
+tells agents to read it, and to generate it when it is missing.
 
 Formats (both use the SKILL.md frontmatter convention):
-  claude  -> .claude/skills/vl-release/SKILL.md   (Claude Code)
-  agents  -> .agents/skills/vl-release/SKILL.md   (Codex and other AGENTS-style tools)
+  claude  -> .claude/skills/vl-release/   (Claude Code)
+  agents  -> .agents/skills/vl-release/   (Codex and other AGENTS-style tools)
 
-`auto` installs `claude`, plus `agents` when the repository already has an `.agents/` directory.
 Generated files carry a marker; reruns update them in place, and a file without the marker
 (hand-written) is never overwritten unless --force is given.
 """
@@ -23,23 +30,38 @@ from vlrelease.errors import ReleaseError
 from vlrelease.fsutil import atomic_write_text
 
 SKILL_NAME = "vl-release"
+BASE_FILE = "SKILL.md"
+LOCAL_FILE = "PROJECT.md"
 FORMATS = {"claude": ".claude/skills", "agents": ".agents/skills"}
-GENERATED_MARKER = re.compile(r"<!-- vl-release:generated version=\S+ ")
+BASE_MARKER = re.compile(r"<!-- vl-release:generated version=\S+ ")
+LOCAL_MARKER = re.compile(r"<!-- vl-release:generated-local version=\S+ ")
 
 
 @dataclass(frozen=True)
 class SkillInstall:
     format: str
     path: Path
-    status: str  # installed | updated | unchanged | stale | missing | refused
+    status: str  # installed | updated | unchanged | stale | missing | refused | no-base
 
 
-def resolve_formats(config: Config, requested: str) -> list[str]:
+def skill_dir(root: Path, fmt: str) -> Path:
+    return root / FORMATS[fmt] / SKILL_NAME
+
+
+def _template(name: str) -> Template:
+    return Template(resources.files("vlrelease.skill").joinpath(name).read_text(encoding="utf-8"))
+
+
+def render_base_skill() -> str:
+    return _template("SKILL.md.in").substitute(tool_version=__version__)
+
+
+def _base_formats(root: Path, requested: str) -> list[str]:
     if requested == "all":
         return list(FORMATS)
     if requested == "auto":
         formats = ["claude"]
-        if (config.root / ".agents").is_dir():
+        if (root / ".agents").is_dir():
             formats.append("agents")
         return formats
     if requested not in FORMATS:
@@ -47,66 +69,118 @@ def resolve_formats(config: Config, requested: str) -> list[str]:
     return [requested]
 
 
-def render_skill(config: Config) -> str:
-    template = Template(resources.files("vlrelease.skill").joinpath("SKILL.md.in").read_text(encoding="utf-8"))
-    debian = config.debian is not None
-    changelog_section = (
-        f"- **`{config.release.changelog_next}`**: concise, technical, package-facing changes for the next\n"
-        "  release. One `- ` bullet per change; optional `## Section` headings; indented continuation\n"
-        "  lines and one level of nested `  - ` detail bullets. `vlr prepare` renders it into a proper\n"
-        f"  `{config.debian.changelog}` stanza, so write no Debian boilerplate.\n"
-        if debian and config.debian is not None
-        else ""
-    )
-    channels = []
+def _write(path: Path, content: str, marker: re.Pattern[str], fmt: str, *, force: bool, check: bool) -> SkillInstall:
+    if path.is_file():
+        current = path.read_text(encoding="utf-8")
+        if current == content:
+            return SkillInstall(fmt, path, "unchanged")
+        if not marker.search(current) and not force:
+            return SkillInstall(fmt, path, "refused")
+        if check:
+            return SkillInstall(fmt, path, "stale")
+        atomic_write_text(path, content)
+        return SkillInstall(fmt, path, "updated")
+    if check:
+        return SkillInstall(fmt, path, "missing")
+    atomic_write_text(path, content)
+    return SkillInstall(fmt, path, "installed")
+
+
+def install_skill(root: Path, *, requested: str = "auto", force: bool = False, check: bool = False) -> list[SkillInstall]:
+    """Install/update the generic base skill. Needs only the repository root."""
+    content = render_base_skill()
+    return [
+        _write(skill_dir(root, fmt) / BASE_FILE, content, BASE_MARKER, fmt, force=force, check=check)
+        for fmt in _base_formats(root, requested)
+    ]
+
+
+def installed_formats(root: Path) -> list[str]:
+    return [fmt for fmt in FORMATS if (skill_dir(root, fmt) / BASE_FILE).is_file()]
+
+
+def render_local_skill(config: Config) -> str:
+    debian = config.debian
+    staged_rows = f"| Staged release notes (keep current) | `{config.release.notes_next}` |\n"
+    if debian is not None:
+        staged_rows = f"| Staged changelog (keep current) | `{config.release.changelog_next}` |\n" + staged_rows
+    debian_history_row = f"| Published Debian changelog (do not edit) | `{debian.changelog}` |\n" if debian else ""
+
+    targets = [f"`{spec.path}` ({spec.kind})" for spec in config.version.targets]
+    channels: list[str] = []
+    if debian is not None:
+        channels.append(f"- **Debian packages** (built by `vlr build-deb` from `debian/`, revision {debian.revision}):")
+        for contract in debian.packages:
+            details = [f"architecture `{contract.architecture}`"] if contract.architecture else []
+            if contract.required_paths:
+                details.append("must ship " + ", ".join(f"`{p}`" for p in contract.required_paths))
+            if contract.forbidden_paths:
+                details.append("must never ship " + ", ".join(f"`{p}`" for p in contract.forbidden_paths))
+            if contract.identical_files:
+                details.append(
+                    "ships byte-identical copies of " + ", ".join(f"`{pair.source}`" for pair in contract.identical_files)
+                )
+            channels.append(f"  - `{contract.name}`" + (": " + "; ".join(details) if details else ""))
+        if debian.pre_build:
+            channels.append("  - pre-build: " + "; ".join(f"`{' '.join(cmd)}`" for cmd in debian.pre_build))
     if config.apt is not None:
-        channels.append("the .deb to the APT repository")
-    if config.source_archive is not None or config.homebrew is not None:
-        channels.append("the GitHub release")
+        where = config.apt.repository_url or "the configured APT repository"
+        channels.append(
+            f"- **APT**: {where} (suite `{config.apt.suite}`, components {', '.join(config.apt.components)}), "
+            "published by release CI with `vlr publish-deb`"
+        )
+    if config.source_archive is not None:
+        channels.append("- **Source archive** of the prepared tree, attached to the GitHub release")
     if config.homebrew is not None:
-        channels.append(f"the Homebrew formula to {config.homebrew.tap}")
-    targets = [spec.path for spec in config.version.targets]
-    staged = [config.release.changelog_next] if debian else []
-    staged.append(config.release.notes_next)
-    return template.substitute(
-        project_name=config.project.name,
+        channels.append(
+            f"- **Homebrew**: formula template `{config.homebrew.formula}`, published to "
+            f"`{config.homebrew.tap}` as `{config.homebrew.tap_path}`"
+        )
+    if not channels:
+        channels.append("- No publication channels are configured; releases are tags plus release notes.")
+
+    checks = ["vlr check"]
+    if config.release.test_command:
+        checks.append(" ".join(config.release.test_command))
+    version_example = "X.Y.Z"
+    return _template("PROJECT.md.in").substitute(
         tool_version=__version__,
-        staged_docs=", ".join(staged),
-        notes_next=config.release.notes_next,
+        project_name=config.project.name,
+        staged_rows=staged_rows,
         notes=config.release.notes,
-        changelog_section=changelog_section,
-        debian_history_clause=f" and `{config.debian.changelog}`" if config.debian is not None else "",
+        debian_history_row=debian_history_row,
         canonical=config.version.canonical.path,
-        targets_clause=f" ({', '.join(f'`{t}`' for t in targets)})" if targets else "",
+        targets=", ".join(targets) if targets else "no other files",
+        tag_example=config.tag_for(version_example),
         branch=config.release.branch,
-        tag_example=config.tag_for("X.Y.Z"),
-        build_clause=" (`vlr build-deb`, `vlr validate-artifacts`)" if debian else "",
-        publish_clause=f" ({'; '.join(channels)})" if channels else "",
+        title_example=config.release.title.format(
+            version=version_example, tag=config.tag_for(version_example), title="<title>", name=config.project.name
+        ),
+        channels="\n".join(channels),
+        checks="\n".join(checks),
     )
 
 
-def install_skill(config: Config, *, requested: str = "auto", force: bool = False, check: bool = False) -> list[SkillInstall]:
-    content = render_skill(config)
+def install_local_skill(
+    config: Config, *, requested: str = "auto", force: bool = False, check: bool = False
+) -> list[SkillInstall]:
+    """Write PROJECT.md next to every installed base skill (or the requested format)."""
+    if requested == "auto":
+        formats = installed_formats(config.root)
+        if not formats:
+            if check:
+                return [SkillInstall("claude", skill_dir(config.root, "claude") / LOCAL_FILE, "no-base")]
+            raise ReleaseError("No base skill is installed; run `vlr install-skill` first.")
+    else:
+        formats = _base_formats(config.root, requested)
+    content = render_local_skill(config)
     results: list[SkillInstall] = []
-    for fmt in resolve_formats(config, requested):
-        path = config.root / FORMATS[fmt] / SKILL_NAME / "SKILL.md"
-        if path.is_file():
-            current = path.read_text(encoding="utf-8")
-            if current == content:
-                results.append(SkillInstall(fmt, path, "unchanged"))
-                continue
-            if not GENERATED_MARKER.search(current) and not force:
-                results.append(SkillInstall(fmt, path, "refused"))
-                continue
+    for fmt in formats:
+        directory = skill_dir(config.root, fmt)
+        if not (directory / BASE_FILE).is_file():
             if check:
-                results.append(SkillInstall(fmt, path, "stale"))
+                results.append(SkillInstall(fmt, directory / LOCAL_FILE, "no-base"))
                 continue
-            atomic_write_text(path, content)
-            results.append(SkillInstall(fmt, path, "updated"))
-        else:
-            if check:
-                results.append(SkillInstall(fmt, path, "missing"))
-                continue
-            atomic_write_text(path, content)
-            results.append(SkillInstall(fmt, path, "installed"))
+            raise ReleaseError(f"No base skill at {directory / BASE_FILE}; run `vlr install-skill --format {fmt}` first.")
+        results.append(_write(directory / LOCAL_FILE, content, LOCAL_MARKER, fmt, force=force, check=check))
     return results

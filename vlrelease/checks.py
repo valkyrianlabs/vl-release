@@ -53,12 +53,18 @@ def check_repository(config: Config, *, release: bool = False, tag: str | None =
             if not HOMEBREW_URL_PATTERN.search(text) or not HOMEBREW_SHA256_PATTERN.search(text):
                 report.errors.append(f"{config.homebrew.formula} needs top-level `url` and `sha256` lines")
 
-    from vlrelease.skill import install_skill
+    from vlrelease.skill import install_local_skill, install_skill
 
-    for install in install_skill(config, check=True):
+    for install in install_skill(config.root, check=True):
         if install.status in ("missing", "stale"):
             report.warnings.append(
                 f"agent skill {install.path.relative_to(config.root)} is {install.status}; run `vlr install-skill`"
+            )
+    for install in install_local_skill(config, check=True):
+        if install.status in ("missing", "stale"):
+            report.warnings.append(
+                f"project skill context {install.path.relative_to(config.root)} is {install.status}; "
+                "run `vlr install-local-skill`"
             )
 
     if release:
