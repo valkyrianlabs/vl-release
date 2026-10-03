@@ -80,7 +80,7 @@ jobs:
         run: vlr check --release --tag "${RELEASE_REF#refs/tags/}"
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential dpkg-dev debhelper dh-python ruby
+        run: sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends build-essential dpkg-dev debhelper dh-python ruby
 
       - name: Prepare release documents (work tree only)
         run: vlr prepare --record release/meta/prepare.json
@@ -102,7 +102,7 @@ jobs:
       - name: Smoke-test the installed package
         run: |
           set -euo pipefail
-          sudo apt-get install -y ./release/vl-release_*_all.deb
+          sudo -n apt-get install -y ./release/vl-release_*_all.deb
           test "$(/usr/bin/vl-release --version)" = "vl-release ${{ steps.state.outputs.version }}"
           /usr/bin/vlr --repo "$GITHUB_WORKSPACE" check
           /usr/bin/vlr doctor
@@ -172,13 +172,13 @@ jobs:
       - name: Install from the APT repository
         run: |
           set -euo pipefail
-          sudo install -d -m 0755 /etc/apt/keyrings
+          sudo -n install -d -m 0755 /etc/apt/keyrings
           curl -fsSL https://apt.valkyrianlabs.com/pubkey.gpg -o valkyrianlabs.gpg
-          sudo install -m 0644 valkyrianlabs.gpg /etc/apt/keyrings/valkyrianlabs.gpg
+          sudo -n install -m 0644 valkyrianlabs.gpg /etc/apt/keyrings/valkyrianlabs.gpg
           echo "deb [signed-by=/etc/apt/keyrings/valkyrianlabs.gpg] https://apt.valkyrianlabs.com stable main" \
-            | sudo tee /etc/apt/sources.list.d/valkyrianlabs.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y "vl-release=${{ needs.build.outputs.debian_version }}"
+            | sudo -n tee /etc/apt/sources.list.d/valkyrianlabs.list > /dev/null
+          sudo -n apt-get update
+          sudo -n apt-get install -y "vl-release=${{ needs.build.outputs.debian_version }}"
           test "$(/usr/bin/vl-release --version)" = "vl-release ${{ needs.build.outputs.version }}"
 
   github-release:
