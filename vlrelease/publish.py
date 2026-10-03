@@ -10,10 +10,11 @@ After uploading, the index is polled until every artifact is listed with its exp
 Ported from vaulthalla's tools/release/packaging/publication.py (the stronger of the two forks).
 Credentials reach curl through `--config -` on stdin, never argv (argv is world-readable via ps).
 
-Environment (names shared with the existing ValkyrianLabs release workflows):
-  RELEASE_PUBLISH_MODE    disabled | nexus            (default: disabled)
-  NEXUS_REPO_URL          upload endpoint (Nexus APT hosted repository)
-  NEXUS_USER / NEXUS_PASS upload credentials
+Environment (ValkyrianLabs organization-level names first, legacy per-repo names as fallback):
+  RELEASE_PUBLISH_MODE              disabled | nexus     (default: disabled)
+  NEXUS_APT_REPO   (NEXUS_REPO_URL) upload URL of the Nexus APT hosted repository
+  NEXUS_USER                        upload user
+  NEXUS_PASSWORD   (NEXUS_PASS)     upload password
   RELEASE_APT_REPOSITORY_URL / _SUITE / _COMPONENTS / _ARCHITECTURES
                           override [publish.apt] for reading the published index
 """
@@ -97,6 +98,19 @@ def _split(raw: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item for item in re.split(r"[,\s]+", raw.strip()) if item) or default
 
 
+UPLOAD_URL_ENV = ("NEXUS_APT_REPO", "NEXUS_REPO_URL")
+USER_ENV = ("NEXUS_USER",)
+PASSWORD_ENV = ("NEXUS_PASSWORD", "NEXUS_PASS")
+
+
+def _first_env(environment: Mapping[str, str], names: tuple[str, ...]) -> str:
+    for name in names:
+        value = (environment.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _validate_url(url: str, name: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -110,15 +124,19 @@ def resolve_settings(config: Config, *, mode: str | None = None, env: Mapping[st
     resolved_mode = (mode or environment.get("RELEASE_PUBLISH_MODE") or "disabled").strip().lower()
     if resolved_mode not in PUBLISH_MODES:
         raise ConfigError(f"Unsupported publication mode {resolved_mode!r}; expected one of {', '.join(PUBLISH_MODES)}")
-    upload_url = (environment.get("NEXUS_REPO_URL") or "").strip()
-    username = (environment.get("NEXUS_USER") or "").strip()
-    password = (environment.get("NEXUS_PASS") or "").strip()
+    upload_url = _first_env(environment, UPLOAD_URL_ENV)
+    username = _first_env(environment, USER_ENV)
+    password = _first_env(environment, PASSWORD_ENV)
     index_url = (environment.get("RELEASE_APT_REPOSITORY_URL") or config.apt.repository_url or upload_url).strip()
     if resolved_mode == "nexus":
-        missing = [name for name, value in (("NEXUS_REPO_URL", upload_url), ("NEXUS_USER", username), ("NEXUS_PASS", password)) if not value]
+        missing = [
+            " or ".join(names)
+            for names, value in ((UPLOAD_URL_ENV, upload_url), (USER_ENV, username), (PASSWORD_ENV, password))
+            if not value
+        ]
         if missing:
             raise ConfigError(f"Publication mode is `nexus` but {', '.join(missing)} is not set")
-        _validate_url(upload_url, "NEXUS_REPO_URL")
+        _validate_url(upload_url, "NEXUS_APT_REPO")
     if index_url:
         _validate_url(index_url, "the APT repository URL")
     return PublishSettings(
