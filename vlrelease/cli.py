@@ -152,6 +152,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 "version": payload["version"],
                 "tag": payload["tag"],
                 "phase": payload["phase"],
+                "debian_version": payload["debian_top"],
                 "release_title": payload["release_title"],
                 "debian": payload["channels"]["debian"],
                 "apt": payload["channels"]["apt"],

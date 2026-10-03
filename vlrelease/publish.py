@@ -117,7 +117,9 @@ def _validate_url(url: str, name: str) -> None:
         raise ConfigError(f"{name} must be an absolute http(s) URL, got {redact_url(url)!r}")
 
 
-def resolve_settings(config: Config, *, mode: str | None = None, env: Mapping[str, str] | None = None) -> PublishSettings:
+def resolve_settings(
+    config: Config, *, mode: str | None = None, env: Mapping[str, str] | None = None, require_credentials: bool = True
+) -> PublishSettings:
     if config.apt is None:
         raise ConfigError("[publish.apt] is not enabled in release.toml")
     environment = os.environ if env is None else env
@@ -128,7 +130,7 @@ def resolve_settings(config: Config, *, mode: str | None = None, env: Mapping[st
     username = _first_env(environment, USER_ENV)
     password = _first_env(environment, PASSWORD_ENV)
     index_url = (environment.get("RELEASE_APT_REPOSITORY_URL") or config.apt.repository_url or upload_url).strip()
-    if resolved_mode == "nexus":
+    if resolved_mode == "nexus" and require_credentials:
         missing = [
             " or ".join(names)
             for names, value in ((UPLOAD_URL_ENV, upload_url), (USER_ENV, username), (PASSWORD_ENV, password))
@@ -136,6 +138,7 @@ def resolve_settings(config: Config, *, mode: str | None = None, env: Mapping[st
         ]
         if missing:
             raise ConfigError(f"Publication mode is `nexus` but {', '.join(missing)} is not set")
+    if upload_url:
         _validate_url(upload_url, "NEXUS_APT_REPO")
     if index_url:
         _validate_url(index_url, "the APT repository URL")
@@ -267,7 +270,8 @@ def publish_debs(
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = print,
 ) -> PublishResult:
-    settings = resolve_settings(config, mode=mode, env=env)
+    # A dry run only reads the public index, so it needs no upload credentials.
+    settings = resolve_settings(config, mode=mode, env=env, require_credentials=not dry_run)
     if settings.mode == "disabled":
         if require_enabled:
             raise ReleaseError("Publication is required for this run, but RELEASE_PUBLISH_MODE is `disabled`.")

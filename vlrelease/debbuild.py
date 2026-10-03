@@ -106,11 +106,16 @@ class _BuildFailed(ReleaseError):
     pass
 
 
+META_DIR = "meta"  # bookkeeping (e.g. `vlr prepare --record`), not a release asset; survives cleaning
+
+
 def clean_output_dir(output_dir: Path) -> None:
     """Remove previous release assets so stale files can never be checksummed or published."""
     if not output_dir.is_dir():
         return
     for path in output_dir.iterdir():
+        if path.name == META_DIR and path.is_dir():
+            continue
         if path.is_file() or path.is_symlink():
             path.unlink()
         elif path.is_dir():

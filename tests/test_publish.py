@@ -205,6 +205,13 @@ class PublishTests(RepoTestCase):
         self.assertFalse(result.verified)
         self.assertEqual(result.plans[0].action, "upload")
 
+    def test_dry_run_needs_no_credentials(self) -> None:
+        root = self.staged()
+        result, uploads = self.run_publish(root, index_with(self.entry(root)), env={"RELEASE_PUBLISH_MODE": "nexus"}, dry_run=True)
+        self.assertEqual((uploads, result.plans[0].action), ([], "skip-identical"))
+        with self.assertRaisesRegex(IntegrityError, "REFUSING"):
+            self.run_publish(root, index_with(self.entry(root, sha="0" * 64)), env={"RELEASE_PUBLISH_MODE": "nexus"}, dry_run=True)
+
     def test_verify_published_standalone(self) -> None:
         root = self.staged()
         identities = verify_published(
