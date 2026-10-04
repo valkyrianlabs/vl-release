@@ -117,7 +117,7 @@ Requires `[debian]`. Upload credentials and the upload URL come from the environ
 |---|---|---|
 | `repository_url` | – | Public APT base URL for reading `dists/<suite>/<component>/binary-<arch>/Packages` |
 | `suite` / `components` / `architectures` | `"stable"` / `["main"]` / `["amd64"]` | Index locations (`all` packages appear in every `binary-*` index) |
-| `verify_timeout` / `verify_interval` | `600` / `15` | Seconds to wait for reindexing |
+| `verify_timeout` / `verify_interval` | `600` / `15` | Seconds to wait for reindexing; each poll first requests the suite's `InRelease` (falling back to `Release`), which makes repositories that rebuild lazily (Nexus apt-hosted) regenerate the index |
 
 ## `[homebrew]`
 

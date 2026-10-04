@@ -6,7 +6,15 @@ import unittest
 from pathlib import Path
 
 from tests.support import DEBIAN_CONFIG, RepoTestCase
-from vlrelease.apt_index import AptIndex, AptIndexConfig, AptPackageEntry, compare_debian_versions, load_apt_index, parse_packages_index
+from vlrelease.apt_index import (
+    AptIndex,
+    AptIndexConfig,
+    AptPackageEntry,
+    compare_debian_versions,
+    load_apt_index,
+    parse_packages_index,
+    request_index_refresh,
+)
 from vlrelease.checksums import sha256_file, write_sha256sums
 from vlrelease.errors import ConfigError, IntegrityError, ReleaseError
 from vlrelease.publish import (
@@ -85,6 +93,31 @@ class AptIndexTests(unittest.TestCase):
         load_apt_index(AptIndexConfig("https://apt.example.com", username="u", password="s3cr3t"), http_get=getter)
         self.assertTrue(seen["Authorization"].startswith("Basic "))
 
+    def test_index_refresh_requests_the_release_files(self) -> None:
+        calls: list[str] = []
+
+        def getter(url: str, headers):
+            calls.append(url)
+            if url.endswith("/InRelease"):
+                raise ValueError("HTTP 404")
+            return b"Origin: demo"
+
+        config = AptIndexConfig("https://apt.example.com")
+        self.assertTrue(request_index_refresh(config, http_get=getter))
+        self.assertEqual(
+            calls,
+            ["https://apt.example.com/dists/stable/InRelease", "https://apt.example.com/dists/stable/Release"],
+        )
+
+        def broken(url: str, headers):
+            raise ValueError("HTTP 503")
+
+        self.assertFalse(request_index_refresh(config, http_get=broken), "best effort: errors never raise")
+        calls.clear()
+        direct = AptIndexConfig("https://apt.example.com/dists/stable/main/binary-amd64/Packages")
+        self.assertFalse(request_index_refresh(direct, http_get=getter))
+        self.assertEqual(calls, [], "a direct Packages URL has no suite to refresh")
+
     def test_debian_version_ordering(self) -> None:
         self.assertLess(compare_debian_versions("1.2.0-1", "1.10.0-1"), 0)
         self.assertLess(compare_debian_versions("1.0~rc1-1", "1.0-1"), 0)
@@ -159,6 +192,41 @@ class PublishTests(RepoTestCase):
             self.run_publish(root, index_with(newer))
         _result, uploads = self.run_publish(root, [index_with(newer), index_with(newer, self.entry(root))], allow_older_version=True)
         self.assertEqual(len(uploads), 1)
+
+    def test_verification_triggers_a_lazily_rebuilt_index(self) -> None:
+        # A Nexus apt-hosted repository regenerates dists/ when a client asks for the Release files, not on upload
+        # (vaulthalla v1.9.0 stayed unlisted for 20 minutes). Verification must ask for them before each read.
+        root = self.staged()
+        digest = sha256_file(root / "release" / "demo_1.2.0-1_all.deb")
+        state = {"uploaded": False, "rebuilt": False}
+        calls: list[str] = []
+
+        def getter(url: str, headers):
+            name = url.rsplit("/", 1)[-1]
+            calls.append(name)
+            if name in ("InRelease", "Release"):
+                state["rebuilt"] = state["uploaded"]
+                return b"Origin: demo"
+            if name.endswith(".gz"):
+                raise ValueError("HTTP 404")
+            if state["rebuilt"]:
+                return f"Package: demo\nVersion: 1.2.0-1\nArchitecture: all\nSHA256: {digest}\n".encode()
+            return b""
+
+        def upload(*_args) -> None:
+            state["uploaded"] = True
+
+        result = publish_debs(
+            self.config(root),
+            env=NEXUS_ENV,
+            uploader=upload,
+            http_get=getter,
+            sleep=lambda _seconds: None,
+            log=lambda _line: None,
+        )
+        self.assertTrue(result.verified)
+        self.assertEqual(calls[:2], ["Packages.gz", "Packages"], "the pre-upload read is a plain index read")
+        self.assertEqual(calls[2], "InRelease", "verification asks for the Release files first")
 
     def test_verification_times_out(self) -> None:
         root = self.staged()

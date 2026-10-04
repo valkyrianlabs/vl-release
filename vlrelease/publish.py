@@ -31,7 +31,15 @@ from pathlib import Path
 from typing import Callable, Mapping
 from urllib.parse import urlparse
 
-from vlrelease.apt_index import AptIndex, AptIndexConfig, compare_debian_versions, load_apt_index, redact_url
+from vlrelease.apt_index import (
+    AptIndex,
+    AptIndexConfig,
+    HttpGet,
+    compare_debian_versions,
+    load_apt_index,
+    redact_url,
+    request_index_refresh,
+)
 from vlrelease.artifacts import DebIdentity, deb_files, identify_deb
 from vlrelease.checksums import SHA256SUMS_NAME, read_sha256sums
 from vlrelease.config import Config
@@ -192,6 +200,16 @@ def plan_publication(
     return plans
 
 
+def _verification_loader(index: AptIndexConfig, http_get: HttpGet | None) -> IndexLoader:
+    """Each poll first asks for the suite's Release files (see request_index_refresh), then reads Packages."""
+
+    def load() -> AptIndex:
+        request_index_refresh(index, http_get=http_get)
+        return load_apt_index(index, http_get=http_get)
+
+    return load
+
+
 def verify_publication(
     artifacts: tuple[DebIdentity, ...],
     *,
@@ -267,6 +285,7 @@ def publish_debs(
     env: Mapping[str, str] | None = None,
     uploader: Uploader | None = None,
     index_loader: IndexLoader | None = None,
+    http_get: HttpGet | None = None,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = print,
 ) -> PublishResult:
@@ -281,7 +300,7 @@ def publish_debs(
     require_sha256sums(config.output_dir, identities)
     if not settings.index.repository_url:
         raise ConfigError("Set [publish.apt].repository_url (or RELEASE_APT_REPOSITORY_URL) to read the APT index.")
-    loader = index_loader or (lambda: load_apt_index(settings.index))
+    loader = index_loader or (lambda: load_apt_index(settings.index, http_get=http_get))
     try:
         index = loader()
     except ValueError as exc:
@@ -299,7 +318,7 @@ def publish_debs(
             upload(plan.artifact.path, settings.upload_url, settings.username, settings.password)
     verify_publication(
         identities,
-        index_loader=loader,
+        index_loader=index_loader or _verification_loader(settings.index, http_get),
         timeout=settings.verify_timeout if verify_timeout is None else verify_timeout,
         interval=settings.verify_interval,
         sleep=sleep,
@@ -315,6 +334,7 @@ def verify_published(
     timeout: float | None = None,
     env: Mapping[str, str] | None = None,
     index_loader: IndexLoader | None = None,
+    http_get: HttpGet | None = None,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = print,
 ) -> tuple[DebIdentity, ...]:
@@ -324,7 +344,7 @@ def verify_published(
     identities = collect_identities(config)
     verify_publication(
         identities,
-        index_loader=index_loader or (lambda: load_apt_index(settings.index)),
+        index_loader=index_loader or _verification_loader(settings.index, http_get),
         timeout=settings.verify_timeout if timeout is None else timeout,
         interval=settings.verify_interval,
         sleep=sleep,

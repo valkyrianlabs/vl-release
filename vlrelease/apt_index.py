@@ -120,6 +120,34 @@ def load_apt_index(config: AptIndexConfig, *, http_get: HttpGet | None = None) -
     return index
 
 
+def release_file_urls(config: AptIndexConfig) -> tuple[str, ...]:
+    """The suite's InRelease and Release URLs (none when repository_url points straight at a Packages file)."""
+    base = config.repository_url.rstrip("/")
+    if base.endswith("/Packages") or base.endswith("/Packages.gz"):
+        return ()
+    return (f"{base}/dists/{config.suite}/InRelease", f"{base}/dists/{config.suite}/Release")
+
+
+def request_index_refresh(config: AptIndexConfig, *, http_get: HttpGet | None = None) -> bool:
+    """Request the suite's InRelease (falling back to Release) and discard it; True if one was served.
+
+    Some repository managers rebuild the dists/ metadata when a client asks for the Release files rather than when a
+    package is uploaded (Sonatype Nexus apt-hosted repositories do). A verifier that only polls the Packages indexes
+    then waits for a rebuild nothing triggers: vaulthalla v1.9.0 sat unlisted for 20 minutes until the next
+    `apt-get update` elsewhere asked for InRelease, and the index regenerated within seconds. Best effort: failures are
+    ignored, since the Packages read that follows decides.
+    """
+    getter = default_http_get if http_get is None else http_get
+    headers = _auth_headers(config)
+    for url in release_file_urls(config):
+        try:
+            getter(url, headers)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def parse_packages_index(content: str) -> list[AptPackageEntry]:
     entries: list[AptPackageEntry] = []
     for stanza in re.split(r"\n\s*\n", content):
