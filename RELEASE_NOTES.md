@@ -1,5 +1,16 @@
 # vl-release release notes
 
+<!-- vl-release:entry version=0.1.4 -->
+## 0.1.4 — Publication verification no longer waits on a lazily rebuilt APT index
+
+_Released 2026-10-04_
+
+`vlr publish-deb` and `vlr verify-published` now request the suite's `InRelease` (falling back to `Release`) before
+each read of the `Packages` indexes. Repository managers that rebuild their `dists/` metadata only when a client asks
+for the Release files, such as Sonatype Nexus apt-hosted repositories, regenerate the index right away instead of
+leaving a successful upload unlisted until some other client runs `apt-get update`. Previously a release could publish
+its package and still fail verification after `verify_timeout`.
+
 <!-- vl-release:entry version=0.1.3 -->
 ## 0.1.3 — No more stale-skill warnings after every release
 

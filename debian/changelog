@@ -1,3 +1,12 @@
+vl-release (0.1.4-1) unstable; urgency=medium
+
+  * publish-deb/verify-published: request dists/<suite>/InRelease (then
+    Release) before every Packages poll, so lazily rebuilt indexes (Nexus
+    apt-hosted) regenerate during verification; best effort, the Packages read
+    decides.
+
+ -- Valkyrian Labs <maintainers@valkyrianlabs.com>  Sun, 04 Oct 2026 23:42:03 +0000
+
 vl-release (0.1.3-1) unstable; urgency=medium
 
   * Generated skill files no longer embed the vl-release version, so version
