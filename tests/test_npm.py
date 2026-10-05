@@ -187,6 +187,12 @@ class NpmBuildTests(PreparedNpmRepo):
         kinds = {row["name"]: row["kind"] for row in artifact_info(self.config(root))}
         self.assertEqual(kinds["demo-widget-1.2.0.tgz"], "npm-package")
 
+    def test_json_output_is_not_polluted_by_the_packer(self) -> None:
+        root = self.prepared_repo()
+        code, out, _err = self.vlr("--repo", str(root), "build-npm", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["tarball"].rsplit("/", 1)[-1], "demo-widget-1.2.0.tgz")
+
     def test_pre_pack_commands_run_in_the_package_directory(self) -> None:
         config = NPM_CONFIG.replace("[npm]\n", '[npm]\npre_pack = [["sh", "-c", "echo built > index.js"]]\n')
         root = self.prepared_repo(config=config)

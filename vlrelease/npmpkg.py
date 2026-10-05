@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import subprocess
+import sys
 import tarfile
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -166,7 +167,16 @@ def pack_command(packer: str, destination: Path) -> list[str]:
 def _run(command: list[str], cwd: Path, runner: Runner, log: Callable[[str], None]) -> None:
     log(f"$ {' '.join(command)}  (in {cwd})")
     try:
-        completed = runner(command, cwd=cwd, check=False)
+        # Child output goes to stderr: stdout is reserved for vlr's own (possibly JSON) result.
+        try:
+            stderr_fd = sys.stderr.fileno()
+        except (AttributeError, OSError, ValueError):  # e.g. a redirected, in-memory stderr
+            stderr_fd = None
+        if stderr_fd is None:
+            completed = runner(command, cwd=cwd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            sys.stderr.write(completed.stdout or "")
+        else:
+            completed = runner(command, cwd=cwd, check=False, stdout=stderr_fd)
     except FileNotFoundError as exc:
         raise ReleaseError(f"`{command[0]}` is not on PATH") from exc
     if completed.returncode != 0:
