@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import io
 import os
@@ -28,6 +29,17 @@ GIT_ENV = {
     "GIT_COMMITTER_DATE": "2026-10-01T12:00:00+00:00",
 }
 os.environ.update(GIT_ENV)
+# Real `npm pack` calls in the tests must not depend on the network, the user's npm cache or
+# config, or npm's update check: Debian package builds run this suite in a sandboxed HOME.
+_NPM_CACHE = tempfile.mkdtemp(prefix="vlr-test-npm-cache-")
+atexit.register(shutil.rmtree, _NPM_CACHE, True)
+os.environ.update(
+    NPM_CONFIG_CACHE=_NPM_CACHE,
+    NPM_CONFIG_OFFLINE="true",
+    NPM_CONFIG_UPDATE_NOTIFIER="false",
+    NPM_CONFIG_AUDIT="false",
+    NPM_CONFIG_FUND="false",
+)
 os.environ.pop("SOURCE_DATE_EPOCH", None)
 for _name in ("RELEASE_PUBLISH_MODE", "NEXUS_REPO_URL", "NEXUS_APT_REPO", "NEXUS_USER", "NEXUS_PASS", "NEXUS_PASSWORD", "RELEASE_APT_REPOSITORY_URL",
               "RELEASE_DEBIAN_DISTRIBUTION", "RELEASE_DEBIAN_URGENCY", "DEBFULLNAME", "DEBEMAIL", "GITHUB_OUTPUT",

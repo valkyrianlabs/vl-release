@@ -7,7 +7,7 @@ name = "vl-release"
 dynamic = ["version"]
 description = "Deterministic release toolkit for Valkyrian Labs projects"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Valkyrian Labs", email = "maintainers@valkyrianlabs.com" }]
 dependencies = []

@@ -22,11 +22,11 @@ anything inconsistent.
 ## Install
 
 ```sh
-sudo apt install vl-release                  # ValkyrianLabs APT repository (Debian/Ubuntu, Python >= 3.11)
+sudo apt install vl-release                  # ValkyrianLabs APT repository (Debian/Ubuntu, Python >= 3.12)
 brew install valkyrianlabs/tap/vl-release    # Homebrew (macOS/Linux)
 ```
 
-From a source checkout (no installation, no dependencies beyond Python ≥ 3.11 and git):
+From a source checkout (no installation, no dependencies beyond Python ≥ 3.12 and git):
 
 ```sh
 python3 -m vlrelease --version               # or ./bin/vlr
@@ -178,11 +178,11 @@ vl-release.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests -t .    # stdlib unittest; Python 3.11, 3.12, 3.14
+python3 -m unittest discover -s tests -t .    # stdlib unittest; Python 3.12 and 3.14
 ./bin/vlr check                               # this repository satisfies its own contract
 ```
 
-Runtime dependencies: Python ≥ 3.11 standard library and `git`. `dpkg-dev` (build/validate),
+Runtime dependencies: Python ≥ 3.12 standard library and `git`. `dpkg-dev` (build/validate),
 `curl` (APT upload), `npm` (npm packages) and `gh` (GitHub releases) are needed only for the commands that use them.
 
 vl-release is maintained with its own workflow: keep `.release/*_NEXT.md` current as you change

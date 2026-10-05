@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.14"]
+        python: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -68,6 +68,7 @@ jobs:
           set -euo pipefail
           vlr prepare
           vlr build-deb
+          sed -n '/Slowest test durations/,/^$/p' release/build-deb.log
           vlr source-archive
           vlr homebrew formula
           vlr checksums

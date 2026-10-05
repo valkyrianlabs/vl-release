@@ -12,7 +12,7 @@ from pathlib import Path
 import vlrelease
 from vlrelease.config import Config
 
-MIN_PYTHON = (3, 11)
+MIN_PYTHON = (3, 12)
 
 
 @dataclass(frozen=True)

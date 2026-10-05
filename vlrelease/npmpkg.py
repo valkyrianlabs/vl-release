@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import json
 import subprocess
 import sys
@@ -164,8 +165,15 @@ def pack_command(packer: str, destination: Path) -> list[str]:
     return ["npm", "pack", "--pack-destination", str(destination)]
 
 
-def _run(command: list[str], cwd: Path, runner: Runner, log: Callable[[str], None]) -> None:
+# npm's own housekeeping has no place in a release build: no update check, audit or funding notices.
+PACK_ENV = {"NPM_CONFIG_UPDATE_NOTIFIER": "false", "NPM_CONFIG_AUDIT": "false", "NPM_CONFIG_FUND": "false"}
+
+
+def _run(
+    command: list[str], cwd: Path, runner: Runner, log: Callable[[str], None], env: dict[str, str] | None = None
+) -> None:
     log(f"$ {' '.join(command)}  (in {cwd})")
+    extra = {"env": {**os.environ, **env}} if env else {}
     try:
         # Child output goes to stderr: stdout is reserved for vlr's own (possibly JSON) result.
         try:
@@ -173,10 +181,12 @@ def _run(command: list[str], cwd: Path, runner: Runner, log: Callable[[str], Non
         except (AttributeError, OSError, ValueError):  # e.g. a redirected, in-memory stderr
             stderr_fd = None
         if stderr_fd is None:
-            completed = runner(command, cwd=cwd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            completed = runner(
+                command, cwd=cwd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **extra
+            )
             sys.stderr.write(completed.stdout or "")
         else:
-            completed = runner(command, cwd=cwd, check=False, stdout=stderr_fd)
+            completed = runner(command, cwd=cwd, check=False, stdout=stderr_fd, **extra)
     except FileNotFoundError as exc:
         raise ReleaseError(f"`{command[0]}` is not on PATH") from exc
     if completed.returncode != 0:
@@ -206,8 +216,9 @@ def build_npm(
     if clean:
         for stale in npm_tarballs(output_dir):
             stale.unlink()
-    for command in commands:
+    for command in commands[:-1]:
         _run(command, package_dir, runner, log)
+    _run(commands[-1], package_dir, runner, log, PACK_ENV)
     if not tarball.is_file():
         produced = ", ".join(path.name for path in npm_tarballs(output_dir)) or "nothing"
         raise ReleaseError(f"{npm.packer} pack did not write {tarball.name} to {output_dir} (found: {produced})")

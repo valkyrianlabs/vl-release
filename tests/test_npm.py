@@ -218,6 +218,26 @@ class NpmValidationTests(PreparedNpmRepo):
         report = validate_artifacts(self.config(root))
         self.assertTrue(any("unexpected npm tarball demo-widget-1.1.0.tgz" in issue for issue in report.issues))
 
+    def test_pack_runs_without_npm_housekeeping(self) -> None:
+        root = self.prepared_repo()
+        seen: list[tuple[list[str], dict | None]] = []
+
+        def runner(command, **kwargs):
+            seen.append((command, kwargs.get("env")))
+            if command[:2] == ["npm", "pack"]:
+                write_tarball(root / "release" / "demo-widget-1.2.0.tgz", {"package/package.json": (PACKAGE_JSON % "1.2.0").encode()})
+            return subprocess.CompletedProcess(command, 0)
+
+        config_text = NPM_CONFIG.replace("[npm]\n", '[npm]\npre_pack = [["true"]]\n')
+        (root / "release.toml").write_text(config_text, encoding="utf-8")
+        build_npm(self.config(root), runner=runner, log=lambda _line: None)
+        (pre_pack, pre_env), (pack, pack_env) = seen
+        self.assertEqual(pre_pack, ["true"])
+        self.assertIsNone(pre_env)  # build commands keep the caller's environment
+        self.assertEqual(pack[:2], ["npm", "pack"])
+        self.assertEqual(pack_env["NPM_CONFIG_UPDATE_NOTIFIER"], "false")
+        self.assertEqual(pack_env["NPM_CONFIG_AUDIT"], "false")
+
     def test_build_refuses_an_unprepared_tree(self) -> None:
         root = self.make_repo(config=NPM_CONFIG, files={"package.json": PACKAGE_JSON % "1.0.0"})
         with self.assertRaisesRegex(ReleaseError, "not prepared"):
