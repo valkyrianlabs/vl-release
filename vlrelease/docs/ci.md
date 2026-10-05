@@ -7,8 +7,10 @@ ordering. Release semantics live in `vlr` commands. A release job looks like thi
 - run: vlr check --release --tag "$GITHUB_REF_NAME"
 - run: vlr prepare --record release/meta/prepare.json
 - run: vlr build-deb && vlr source-archive && vlr homebrew formula
+- run: vlr build-npm                               # npm packages: the tarball that gets published
 - run: vlr checksums && vlr validate-artifacts
 - run: vlr publish-deb --require-enabled          # verifies the APT index by sha256
+- run: vlr publish-npm --require-enabled          # verifies every registry by dist.integrity
 - run: vlr github-release
 - run: vlr homebrew publish --tap-dir homebrew-tap
 - run: vlr finalize --record release/meta/prepare.json
@@ -33,7 +35,7 @@ populated and the release can be re-run.
 
 - `prepare` is deterministic (dates come from the release commit), so a re-run job renders the
   same documents and, on the same toolchain, rebuilds the same bytes.
-- `publish-deb`, `github-release` and `homebrew publish` skip what is already published with
+- `publish-deb`, `publish-npm`, `github-release` and `homebrew publish` skip what is already published with
   identical bytes and **refuse** (exit code 3) anything that would replace published bytes.
   If a rebuild ever produces different bytes for a published version, re-run only the failed
   jobs (reusing the uploaded build artifact) or release a new patch version.
@@ -55,6 +57,21 @@ deterministic) and pass `--record` from the build job's artifact.
 
 vl-release also accepts the legacy per-repository names `NEXUS_PASS` and `NEXUS_REPO_URL` as
 fallbacks, so existing workflows can migrate without renaming secrets.
+
+## npm
+
+`vlr publish-npm --dry-run` reads every registry (no credentials needed for public reads) and
+fails before anything is published if a version already exists with different bytes; run it in
+the build job. The publishing job needs:
+
+- `npm` on PATH; for `auth = "oidc"` (npm trusted publishing) npm ≥ 11.5.1
+  (`npm install -g npm@latest`) and `permissions: id-token: write`. On npmjs.com the package's
+  trusted publisher must name this repository, the workflow file and (if set) the environment.
+- for `token` / `basic` registries, the variables named in their tables.
+- `RELEASE_PUBLISH_MODE=enabled` (or `--mode enabled`); `disabled` is the default.
+
+Registries are published in the order they are listed; a rerun skips the ones that already
+carry the identical tarball.
 
 ## Ordering
 

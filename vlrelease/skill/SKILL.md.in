@@ -34,8 +34,11 @@ vlr help ci         # the release CI transaction and workflow conventions
    - `[debian]` only if the repository builds .deb packages (`debian/control` exists), with one
      `[[debian.packages]]` contract per binary package: the paths it must ship, and paths that
      must never ship.
-   - Publication (`[publish.apt]`, `[homebrew]`, `[source_archive]`): **ask the user** for
-     repository URLs, taps and which channels to enable; do not guess publication targets.
+   - `[npm]` only if the repository publishes an npm package (`package.json` without
+     `"private": true`), with a tarball contract (`package/...` paths it must and must never ship).
+   - Publication (`[publish.apt]`, `[[publish.npm]]`, `[homebrew]`, `[source_archive]`):
+     **ask the user** for repository URLs, registries, taps and which channels to enable; do not
+     guess publication targets.
 3. Add `build/` and `release/` to `.gitignore`.
 4. Run `vlr check` until it passes, then `vlr version check`.
 5. Run `vlr install-local-skill` to record this repository's specifics in `PROJECT.md`.

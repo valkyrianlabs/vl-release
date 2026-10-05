@@ -119,6 +119,75 @@ Requires `[debian]`. Upload credentials and the upload URL come from the environ
 | `suite` / `components` / `architectures` | `"stable"` / `["main"]` / `["amd64"]` | Index locations (`all` packages appear in every `binary-*` index) |
 | `verify_timeout` / `verify_interval` | `600` / `15` | Seconds to wait for reindexing; each poll first requests the suite's `InRelease` (falling back to `Release`), which makes repositories that rebuild lazily (Nexus apt-hosted) regenerate the index |
 
+## `[npm]`
+
+Enabled by its presence. `vlr build-npm` packs the package from the prepared work tree into the
+output directory; that tarball is checksummed, validated, attached to the GitHub release and
+published unchanged. The package name and version come from `package_dir/package.json`, which
+must be a version target (or the canonical version) and must not set `"private": true` or
+`publishConfig.registry`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `package_dir` | `"."` | Directory containing `package.json` |
+| `packer` | `"npm"` | `npm` (`npm pack`) or `pnpm` (`pnpm pack`, which applies `publishConfig` overrides and rewrites `workspace:` ranges) |
+| `pre_pack` | `[]` | Commands run in `package_dir` before packing, e.g. `[["pnpm", "build"]]` |
+| `required_paths` / `forbidden_paths` / `any_of` | `[]` | Tarball contract, as for `[[debian.packages]]`; members start with `package/` |
+| `identical_files` | `[]` | `{ member = "package/README.md", source = "README.md" }`: packaged bytes must equal the work tree |
+| `dist_tag` | `"latest"` | dist-tag a release moves |
+| `maintenance_dist_tag` | `"maintenance"` | dist-tag for `publish-npm --allow-older-version` releases below `dist_tag`, which never moves backwards |
+| `access` | `"public"` | `public` or `restricted` (scoped packages) |
+
+## `[[publish.npm]]`
+
+One table per registry; requires `[npm]`. `vlr publish-npm` plans every registry against its
+live packument before uploading anywhere: absent → upload, identical `dist.integrity` (sha512,
+else `dist.shasum`) → skip, different → refuse (exit 3), unreadable → refuse. After uploading it
+polls each registry until the version is listed with the expected integrity and the dist-tag
+points at it. Uploads use `npm publish <tarball>` with any credentials in a temporary 0600
+userconfig, never argv.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | required | Label used by `--registry NAME` (`[a-z0-9-]`) |
+| `auth` | required | `oidc`: npm trusted publishing from GitHub Actions (`id-token: write`, npm ≥ 11.5.1, no secret; the usual choice for npmjs.com). `token`: bearer token from `token_env`. `basic`: `username_env` + `password_env` (e.g. a private registry) |
+| `registry` | – | Registry URL, e.g. `https://registry.npmjs.org/` |
+| `registry_env` | – | Environment variable holding the URL instead (wins over `registry`) |
+| `token_env` | `"NPM_TOKEN"` | Token variable for `auth = "token"` |
+| `username_env` / `password_env` | – | Required for `auth = "basic"` (also used to read the packument) |
+| `provenance` | `false` | Pass `--provenance` (trusted publishing adds provenance on its own) |
+| `verify_timeout` / `verify_interval` | `300` / `10` | Seconds to wait for the registry to list the version |
+
+Publication is gated by `RELEASE_PUBLISH_MODE`: `disabled` (default) skips it, `enabled`
+publishes (`nexus`, set by APT workflows, also publishes).
+
+npmjs.com with trusted publishing (configure the trusted publisher on npmjs.com for this
+repository and workflow file):
+
+```toml
+[npm]
+pre_pack = [["pnpm", "build"]]
+required_paths = ["package/package.json", "package/dist/index.js"]
+forbidden_paths = ["package/src/*", "package/node_modules/*"]
+identical_files = [{ member = "package/README.md", source = "README.md" }]
+
+[[publish.npm]]
+name = "npmjs"
+registry = "https://registry.npmjs.org/"
+auth = "oidc"
+```
+
+A private registry instead of (or next to) npmjs.com:
+
+```toml
+[[publish.npm]]
+name = "private"
+registry_env = "PRIVATE_NPM_REGISTRY"
+auth = "basic"
+username_env = "PRIVATE_NPM_USER"
+password_env = "PRIVATE_NPM_PASSWORD"
+```
+
 ## `[homebrew]`
 
 | Key | Default | Meaning |

@@ -10,7 +10,7 @@ DEVELOPMENT                                  RELEASE CI (from the tag)
 agent changes code                           vlr check --release --tag vX.Y.Z
 agent maintains                              vlr prepare          (work tree only)
   .release/CHANGELOG_NEXT.md                 build + validate      (from the prepared tree)
-  .release/RELEASE_NOTES_NEXT.md             publish + verify      (APT, GitHub, Homebrew)
+  .release/RELEASE_NOTES_NEXT.md             publish + verify      (APT, npm, GitHub, Homebrew)
 vlr check                                    vlr finalize          (only after success)
 vlr cut patch|minor|major --push  ───tag──▶    commits the promoted history and clears _NEXT
 ```
@@ -100,6 +100,9 @@ HTML comments are ignored, so the reset templates are pure guidance. Placeholder
 | `vlr validate-artifacts [--json]` / `vlr artifacts [--json]` | Package contracts, checksums, staged assets / asset listing |
 | `vlr publish-deb [--dry-run] [--require-enabled]` | Idempotent, integrity-checked APT publication + verification |
 | `vlr verify-published [--timeout S]` | Wait until the APT index lists the built packages by sha256 |
+| `vlr build-npm` | Pack the npm package from the prepared work tree (`npm pack` or `pnpm pack`) |
+| `vlr publish-npm [--dry-run] [--registry NAME] [--require-enabled]` | Idempotent, integrity-checked publication to every `[[publish.npm]]` registry + verification |
+| `vlr verify-npm [--registry NAME] [--timeout S]` | Wait until the registries list the built tarball by integrity |
 | `vlr github-release` | Create/update the GitHub release and upload assets (idempotent) |
 | `vlr cut patch\|minor\|major\|X.Y.Z [--push]` | Bump, commit, annotated tag, atomic push (resumable) |
 | `vlr finalize [--record FILE]` | After publication: commit the promoted history + cleared `_NEXT` to the branch |
@@ -136,6 +139,13 @@ Publishing is boring and unforgiving:
   identical sha256 → skip; different sha256 → refuse; unreadable index → refuse. After upload the
   index is polled until every package is listed with its expected sha256. Credentials reach curl
   through `--config -` on stdin, never argv.
+- **npm** (npmjs.com via trusted publishing, or any npm registry): every registry's packument decides before
+  anything is uploaded anywhere: absent → upload; identical `dist.integrity` → skip; different →
+  refuse; unreadable → refuse. Uploads publish the validated tarball itself through
+  `npm publish`, with credentials in a temporary 0600 userconfig, then each registry is polled
+  until it lists the integrity and the dist-tag. A release below the current `latest` is refused
+  (or published under a maintenance tag), so `latest` never moves backwards. Trusted publishing
+  (GitHub OIDC) is supported without secrets.
 - **GitHub releases**: title/body come from the prepared entry; assets are never clobbered: an
   existing asset with different bytes is refused.
 - **Homebrew**: the formula points at the source-archive release asset; before touching the tap,
@@ -148,6 +158,8 @@ Publishing is boring and unforgiving:
 | Variable | Used by |
 |---|---|
 | `RELEASE_PUBLISH_MODE` (`disabled`\|`nexus`) | `publish-deb` (default `disabled`) |
+| `RELEASE_PUBLISH_MODE` (`disabled`\|`enabled`) | `publish-npm` (default `disabled`; `nexus` also publishes) |
+| `registry_env` / `token_env` / `username_env` / `password_env` | per `[[publish.npm]]` table (npmjs.com with `auth = "oidc"` needs none) |
 | `NEXUS_APT_REPO` (fallback `NEXUS_REPO_URL`) | Nexus APT upload URL |
 | `NEXUS_USER`, `NEXUS_PASSWORD` (fallback `NEXUS_PASS`) | Nexus credentials |
 | `RELEASE_APT_REPOSITORY_URL`, `_SUITE`, `_COMPONENTS`, `_ARCHITECTURES` | override `[publish.apt]` for index reads |
@@ -171,7 +183,7 @@ python3 -m unittest discover -s tests -t .    # stdlib unittest; Python 3.11, 3.
 ```
 
 Runtime dependencies: Python ≥ 3.11 standard library and `git`. `dpkg-dev` (build/validate),
-`curl` (APT upload) and `gh` (GitHub releases) are needed only for the commands that use them.
+`curl` (APT upload), `npm` (npm packages) and `gh` (GitHub releases) are needed only for the commands that use them.
 
 vl-release is maintained with its own workflow: keep `.release/*_NEXT.md` current as you change
 it (see `.claude/skills/vl-release/SKILL.md`).

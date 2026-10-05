@@ -53,6 +53,10 @@ def run_doctor(config: Config | None, *, strict: bool = False) -> list[Check]:
     checks.append(_tool("dpkg-buildpackage", "build-deb", required=strict and debian))
     checks.append(_tool("dpkg-deb", "validate-artifacts", required=strict and debian, version_args=("--version",)))
     checks.append(_tool("curl", "publish-deb uploads", required=strict and config is not None and config.apt is not None))
+    npm = config is not None and config.npm is not None
+    checks.append(_tool("npm", "build-npm / publish-npm", required=strict and npm))
+    if config is not None and config.npm is not None and config.npm.packer == "pnpm":
+        checks.append(_tool("pnpm", "build-npm (packer = pnpm)", required=strict))
     checks.append(_tool("gh", "github-release", required=False))
     checks.append(_tool("ruby", "Homebrew formula syntax check", required=False, version_args=("-v",)))
     return checks

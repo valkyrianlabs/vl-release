@@ -144,6 +144,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             "apt": config.apt is not None,
             "source_archive": config.source_archive is not None,
             "homebrew": config.homebrew is not None,
+            "npm": config.npm is not None,
+            "npm_registries": [registry.name for registry in config.npm_registries],
         },
     )
     if args.github_output:
@@ -157,6 +159,8 @@ def cmd_status(args: argparse.Namespace) -> int:
                 "debian": payload["channels"]["debian"],
                 "apt": payload["channels"]["apt"],
                 "homebrew": payload["channels"]["homebrew"],
+                "npm": payload["channels"]["npm"],
+                "npm_registries": ",".join(payload["channels"]["npm_registries"]),
             }
         )
     if args.json:
@@ -373,6 +377,52 @@ def cmd_publish_deb(args: argparse.Namespace) -> int:
         print(f"publication skipped: {result.skipped_reason}")
     else:
         print(f"publication {'planned (dry run)' if result.dry_run else 'verified'}")
+    return EXIT_OK
+
+
+def cmd_build_npm(args: argparse.Namespace) -> int:
+    from vlrelease.npmpkg import build_npm
+
+    result = build_npm(_config(args), clean=not args.no_clean, dry_run=args.dry_run, log=_log(args))
+    if args.json:
+        _print_json(result.as_dict())
+    elif args.dry_run:
+        print(f"would pack {result.name}@{result.version} -> {result.tarball}")
+        for command in result.commands:
+            print(f"  $ {' '.join(command)}")
+    else:
+        print(f"packed {result.name}@{result.version} -> {result.tarball}")
+    return EXIT_OK
+
+
+def cmd_publish_npm(args: argparse.Namespace) -> int:
+    from vlrelease.npm_publish import publish_npm
+
+    result = publish_npm(
+        _config(args),
+        registries=args.registry,
+        mode=args.mode,
+        dry_run=args.dry_run,
+        require_enabled=args.require_enabled,
+        allow_older_version=args.allow_older_version,
+        verify_timeout=args.verify_timeout,
+        log=_log(args),
+    )
+    if args.json:
+        _print_json(result.as_dict())
+    elif result.skipped_reason:
+        print(f"npm publication skipped: {result.skipped_reason}")
+    else:
+        print(f"npm publication {'planned (dry run)' if result.dry_run else 'verified on ' + ', '.join(result.verified)}")
+    return EXIT_OK
+
+
+def cmd_verify_npm(args: argparse.Namespace) -> int:
+    from vlrelease.npm_publish import verify_npm
+
+    identity, verified = verify_npm(_config(args), registries=args.registry, timeout=args.timeout, log=_log(args))
+    if args.json:
+        _print_json({"package": identity.name, "version": identity.version, "integrity": identity.integrity, "verified": verified})
     return EXIT_OK
 
 
@@ -601,6 +651,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-older-version", action="store_true")
     p.add_argument("--verify-timeout", type=float, metavar="SECONDS")
     p = add("verify-published", cmd_verify_published, "wait until the APT index lists the built .deb files by sha256")
+    p.add_argument("--timeout", type=float, metavar="SECONDS")
+
+    p = add("build-npm", cmd_build_npm, "pack the npm package from the prepared work tree into the output directory")
+    p.add_argument("--no-clean", action="store_true", help="keep existing .tgz files in the output directory")
+    p.add_argument("--dry-run", action="store_true", help="show the commands without running them")
+    p = add("publish-npm", cmd_publish_npm, "publish the npm tarball to the [[publish.npm]] registries (idempotent, verified)")
+    p.add_argument("--registry", action="append", metavar="NAME", help="only this registry (repeatable; default: all)")
+    p.add_argument("--mode", choices=("disabled", "enabled"), help="override RELEASE_PUBLISH_MODE")
+    p.add_argument("--dry-run", action="store_true", help="plan against the live registries without uploading")
+    p.add_argument("--require-enabled", action="store_true", help="fail if publication is disabled")
+    p.add_argument("--allow-older-version", action="store_true", help="publish below the dist-tag under maintenance_dist_tag")
+    p.add_argument("--verify-timeout", type=float, metavar="SECONDS")
+    p = add("verify-npm", cmd_verify_npm, "wait until the npm registries list the built tarball by integrity")
+    p.add_argument("--registry", action="append", metavar="NAME", help="only this registry (repeatable; default: all)")
     p.add_argument("--timeout", type=float, metavar="SECONDS")
 
     p = add("github-release", cmd_github_release, "create/update the GitHub release and upload assets (idempotent)")

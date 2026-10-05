@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 from vlrelease import debchangelog
 from vlrelease.config import Config
+from vlrelease.errors import ReleaseError
 from vlrelease.state import RELEASABLE_PHASES, ReleaseState, read_release_state
 from vlrelease.targets import HOMEBREW_SHA256_PATTERN, HOMEBREW_URL_PATTERN
 
@@ -52,6 +54,20 @@ def check_repository(config: Config, *, release: bool = False, tag: str | None =
             text = formula.read_text(encoding="utf-8")
             if not HOMEBREW_URL_PATTERN.search(text) or not HOMEBREW_SHA256_PATTERN.search(text):
                 report.errors.append(f"{config.homebrew.formula} needs top-level `url` and `sha256` lines")
+
+    if config.npm is not None:
+        from vlrelease.npmpkg import PACKAGE_JSON, read_manifest, require_publishable_manifest
+
+        manifest_path = (PurePosixPath(config.npm.package_dir) / PACKAGE_JSON).as_posix()
+        try:
+            require_publishable_manifest(read_manifest(config), manifest_path)
+        except ReleaseError as exc:
+            report.errors.append(str(exc))
+        if manifest_path not in {spec.path for spec in config.version.all_targets}:
+            report.errors.append(
+                f"{manifest_path} is not a version target; add {{ kind = \"package_json\", path = \"{manifest_path}\" }} "
+                "(or make it the canonical version) so the npm package always carries the release version"
+            )
 
     from vlrelease.skill import install_local_skill, install_skill
 

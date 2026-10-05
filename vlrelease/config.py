@@ -22,6 +22,13 @@ CONFIG_FILENAME = "release.toml"
 SUPPORTED_SCHEMA_VERSIONS = (1,)
 TARGET_KINDS = ("file", "meson", "package_json", "pyproject", "regex", "homebrew")
 HOMEBREW_SOURCES = ("release-asset", "tag-archive")
+NPM_PACKERS = ("npm", "pnpm")
+NPM_AUTH_MODES = ("oidc", "token", "basic")
+NPM_ACCESS = ("public", "restricted")
+_NPM_REGISTRY_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Tags npm accepts and that cannot be mistaken for a semver range.
+_NPM_DIST_TAG = re.compile(r"[a-z][a-z0-9._-]*")
 _PACKAGE_NAME = re.compile(r"[a-z0-9][a-z0-9+.-]+")
 _DEBIAN_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9+.-]*")
 _REPOSITORY_SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -117,6 +124,38 @@ class AptConfig:
 
 
 @dataclass(frozen=True)
+class NpmConfig:
+    """The npm package built from this repository (`vlr build-npm`)."""
+
+    package_dir: str = "."
+    packer: str = "npm"
+    pre_pack: tuple[tuple[str, ...], ...] = ()
+    required_paths: tuple[str, ...] = ()
+    forbidden_paths: tuple[str, ...] = ()
+    any_of: tuple[tuple[str, ...], ...] = ()
+    identical_files: tuple[IdenticalFile, ...] = ()
+    dist_tag: str = "latest"
+    maintenance_dist_tag: str = "maintenance"
+    access: str = "public"
+
+
+@dataclass(frozen=True)
+class NpmRegistryConfig:
+    """One `[[publish.npm]]` registry. Credentials always come from the environment."""
+
+    name: str
+    auth: str
+    registry: str = ""
+    registry_env: str | None = None
+    token_env: str = "NPM_TOKEN"
+    username_env: str | None = None
+    password_env: str | None = None
+    provenance: bool = False
+    verify_timeout: float = 300.0
+    verify_interval: float = 10.0
+
+
+@dataclass(frozen=True)
 class HomebrewConfig:
     formula: str
     tap: str
@@ -138,6 +177,8 @@ class Config:
     source_archive: SourceArchiveConfig | None = None
     apt: AptConfig | None = None
     homebrew: HomebrewConfig | None = None
+    npm: NpmConfig | None = None
+    npm_registries: tuple[NpmRegistryConfig, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def resolve(self, relative: str) -> Path:
@@ -410,12 +451,18 @@ def parse_config(data: dict[str, Any], *, root: Path, path: Path) -> Config:
     debian = _parse_debian(top.table("debian"), project)
     source_archive = _parse_source_archive(top.table("source_archive"))
     apt = None
+    npm_registries: tuple[NpmRegistryConfig, ...] = ()
     publish = top.table("publish")
     if publish is not None:
         apt = _parse_apt(publish.table("apt"))
+        npm_registries = _parse_npm_registries(publish.raw("npm"))
         publish.finish()
     homebrew = _parse_homebrew(top.table("homebrew"), project)
+    npm = _parse_npm(top.table("npm"))
     top.finish()
+
+    if npm_registries and npm is None:
+        raise ConfigError("[[publish.npm]] requires [npm] (it publishes the tarball that `vlr build-npm` builds)")
 
     if apt is not None and debian is None:
         raise ConfigError("[publish.apt] requires [debian] to be enabled (APT publishes the built .deb files)")
@@ -441,6 +488,8 @@ def parse_config(data: dict[str, Any], *, root: Path, path: Path) -> Config:
         source_archive=source_archive,
         apt=apt,
         homebrew=homebrew,
+        npm=npm,
+        npm_registries=npm_registries,
         raw=data,
     )
 
@@ -482,6 +531,34 @@ def _parse_debian(table: _Table | None, project: ProjectConfig) -> DebianConfig 
     return config
 
 
+def _parse_any_of(table: _Table, where: str) -> tuple[tuple[str, ...], ...]:
+    any_of_raw = table.raw("any_of") or []
+    if not isinstance(any_of_raw, list) or not all(
+        isinstance(group, list) and group and all(isinstance(p, str) for p in group) for group in any_of_raw
+    ):
+        raise ConfigError(f"{where}.any_of must be a list of non-empty path lists")
+    return tuple(tuple(_normalize_member(p) for p in group) for group in any_of_raw)
+
+
+def _parse_identical_files(table: _Table, where: str) -> tuple[IdenticalFile, ...]:
+    identical_raw = table.raw("identical_files") or []
+    if not isinstance(identical_raw, list):
+        raise ConfigError(f"{where}.identical_files must be a list of {{ member, source }} tables")
+    identical: list[IdenticalFile] = []
+    for position, entry in enumerate(identical_raw):
+        entry_table = _Table(entry, f"{where}.identical_files[{position}]")
+        member = entry_table.string("member", required=True) or ""
+        source = entry_table.string("source", required=True) or ""
+        entry_table.finish()
+        identical.append(
+            IdenticalFile(
+                member=_normalize_member(member),
+                source=_relative_path(source, f"{where}.identical_files[{position}].source"),
+            )
+        )
+    return tuple(identical)
+
+
 def _parse_packages(raw: Any) -> tuple[DebianPackageContract, ...]:
     if raw is None:
         return ()
@@ -494,34 +571,14 @@ def _parse_packages(raw: Any) -> tuple[DebianPackageContract, ...]:
         name = table.string("name", required=True) or ""
         if not _PACKAGE_NAME.fullmatch(name):
             raise ConfigError(f"{where}.name {name!r} is not a valid Debian package name")
-        any_of_raw = table.raw("any_of") or []
-        if not isinstance(any_of_raw, list) or not all(
-            isinstance(group, list) and group and all(isinstance(p, str) for p in group) for group in any_of_raw
-        ):
-            raise ConfigError(f"{where}.any_of must be a list of non-empty path lists")
-        identical_raw = table.raw("identical_files") or []
-        if not isinstance(identical_raw, list):
-            raise ConfigError(f"{where}.identical_files must be a list of {{ member, source }} tables")
-        identical: list[IdenticalFile] = []
-        for position, entry in enumerate(identical_raw):
-            entry_table = _Table(entry, f"{where}.identical_files[{position}]")
-            member = entry_table.string("member", required=True) or ""
-            source = entry_table.string("source", required=True) or ""
-            entry_table.finish()
-            identical.append(
-                IdenticalFile(
-                    member=_normalize_member(member),
-                    source=_relative_path(source, f"{where}.identical_files[{position}].source"),
-                )
-            )
         contracts.append(
             DebianPackageContract(
                 name=name,
                 architecture=table.string("architecture"),
                 required_paths=tuple(_normalize_member(p) for p in table.strings("required_paths")),
                 forbidden_paths=tuple(_normalize_member(p) for p in table.strings("forbidden_paths")),
-                any_of=tuple(tuple(_normalize_member(p) for p in group) for group in any_of_raw),
-                identical_files=tuple(identical),
+                any_of=_parse_any_of(table, where),
+                identical_files=_parse_identical_files(table, where),
             )
         )
         table.finish()
@@ -600,3 +657,88 @@ def _parse_homebrew(table: _Table | None, project: ProjectConfig) -> HomebrewCon
     if not formula.endswith(".rb"):
         raise ConfigError("homebrew.formula must be a Ruby formula file (*.rb)")
     return config if enabled else None
+
+
+def _parse_npm(table: _Table | None) -> NpmConfig | None:
+    if table is None:
+        return None
+    enabled = table.boolean("enabled", True)
+    defaults = NpmConfig()
+    config = NpmConfig(
+        package_dir=_relative_path(table.string("package_dir", defaults.package_dir) or ".", "npm.package_dir"),
+        packer=table.string("packer", defaults.packer) or defaults.packer,
+        pre_pack=table.commands("pre_pack"),
+        required_paths=tuple(_normalize_member(p) for p in table.strings("required_paths")),
+        forbidden_paths=tuple(_normalize_member(p) for p in table.strings("forbidden_paths")),
+        any_of=_parse_any_of(table, "npm"),
+        identical_files=_parse_identical_files(table, "npm"),
+        dist_tag=table.string("dist_tag", defaults.dist_tag) or defaults.dist_tag,
+        maintenance_dist_tag=table.string("maintenance_dist_tag", defaults.maintenance_dist_tag)
+        or defaults.maintenance_dist_tag,
+        access=table.string("access", defaults.access) or defaults.access,
+    )
+    table.finish()
+    if config.packer not in NPM_PACKERS:
+        raise ConfigError(f"npm.packer must be one of {', '.join(NPM_PACKERS)}, got {config.packer!r}")
+    if config.access not in NPM_ACCESS:
+        raise ConfigError(f"npm.access must be one of {', '.join(NPM_ACCESS)}, got {config.access!r}")
+    for key in ("dist_tag", "maintenance_dist_tag"):
+        if not _NPM_DIST_TAG.fullmatch(getattr(config, key)):
+            raise ConfigError(f"npm.{key} {getattr(config, key)!r} must be a lowercase npm dist-tag such as \"latest\"")
+    if config.dist_tag == config.maintenance_dist_tag:
+        raise ConfigError("npm.maintenance_dist_tag must differ from npm.dist_tag")
+    for pattern in (*config.required_paths, *config.forbidden_paths, *(p for group in config.any_of for p in group)):
+        if not pattern.startswith("package/"):
+            raise ConfigError(f"npm contract path {pattern!r} must start with \"package/\" (npm tarball members do)")
+    for pair in config.identical_files:
+        if not pair.member.startswith("package/"):
+            raise ConfigError(f"npm.identical_files member {pair.member!r} must start with \"package/\"")
+    return config if enabled else None
+
+
+def _parse_npm_registries(raw: Any) -> tuple[NpmRegistryConfig, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError("publish.npm must be an array of tables ([[publish.npm]], one per registry)")
+    registries: list[NpmRegistryConfig] = []
+    for index, item in enumerate(raw):
+        where = f"publish.npm[{index}]"
+        table = _Table(item, where)
+        enabled = table.boolean("enabled", True)
+        defaults = NpmRegistryConfig(name="", auth="")
+        config = NpmRegistryConfig(
+            name=table.string("name", required=True) or "",
+            auth=table.string("auth", required=True) or "",
+            registry=table.string("registry", "") or "",
+            registry_env=table.string("registry_env"),
+            token_env=table.string("token_env", defaults.token_env) or defaults.token_env,
+            username_env=table.string("username_env"),
+            password_env=table.string("password_env"),
+            provenance=table.boolean("provenance", defaults.provenance),
+            verify_timeout=table.number("verify_timeout", defaults.verify_timeout),
+            verify_interval=table.number("verify_interval", defaults.verify_interval),
+        )
+        table.finish()
+        if not _NPM_REGISTRY_NAME.fullmatch(config.name):
+            raise ConfigError(f"{where}.name {config.name!r} must be lowercase letters, digits and dashes")
+        if config.auth not in NPM_AUTH_MODES:
+            raise ConfigError(f"{where}.auth must be one of {', '.join(NPM_AUTH_MODES)}, got {config.auth!r}")
+        if config.auth == "basic" and not (config.username_env and config.password_env):
+            raise ConfigError(f"{where}: auth = \"basic\" needs username_env and password_env (the variables holding them)")
+        if config.auth != "basic" and (config.username_env or config.password_env):
+            raise ConfigError(f"{where}: username_env/password_env only apply to auth = \"basic\"")
+        if not config.registry and not config.registry_env:
+            raise ConfigError(f"{where} needs `registry` (a URL) or `registry_env` (the environment variable holding it)")
+        if config.registry and not re.fullmatch(r"https?://[^\s/]+(/\S*)?", config.registry):
+            raise ConfigError(f"{where}.registry must be an absolute http(s) URL, got {config.registry!r}")
+        for key in ("registry_env", "token_env", "username_env", "password_env"):
+            value = getattr(config, key)
+            if value is not None and not _ENV_NAME.fullmatch(value):
+                raise ConfigError(f"{where}.{key} {value!r} is not an environment variable name")
+        if enabled:
+            registries.append(config)
+    names = [registry.name for registry in registries]
+    if len(names) != len(set(names)):
+        raise ConfigError("publish.npm lists the same registry name more than once")
+    return tuple(registries)

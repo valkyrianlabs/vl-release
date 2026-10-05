@@ -214,6 +214,16 @@ def validate_artifacts(config: Config) -> ValidationReport:
             issues.extend(validate_source_archive(config, archive))
             checked.append(archive.name)
 
+    if config.npm is not None:
+        from vlrelease.npmpkg import validate_npm_artifacts
+
+        try:
+            npm_issues, npm_checked = validate_npm_artifacts(config, str(state.version))
+        except ReleaseError as exc:
+            npm_issues, npm_checked = [str(exc)], []
+        issues.extend(npm_issues)
+        checked.extend(npm_checked)
+
     if config.homebrew is not None:
         from vlrelease.homebrew import validate_rendered_formula
 
@@ -231,6 +241,8 @@ def artifact_info(config: Config) -> list[dict]:
         match = DEB_NAME.fullmatch(path.name)
         if match:
             row.update(kind="deb", package=match.group("package"), version=match.group("version"), architecture=match.group("arch"))
+        elif path.name.endswith(".tgz"):
+            row["kind"] = "npm-package"
         elif path.name.endswith(".tar.gz"):
             row["kind"] = "source-archive"
         elif path.name.endswith((".changes", ".buildinfo")):

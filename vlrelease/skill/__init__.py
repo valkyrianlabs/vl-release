@@ -131,6 +131,15 @@ def render_local_skill(config: Config) -> str:
             f"- **APT**: {where} (suite `{config.apt.suite}`, components {', '.join(config.apt.components)}), "
             "published by release CI with `vlr publish-deb`"
         )
+    if config.npm is not None:
+        npm = config.npm
+        details = [f"packed with `{npm.packer}` from `{npm.package_dir}`", f"dist-tag `{npm.dist_tag}`"]
+        if npm.pre_pack:
+            details.append("pre-pack: " + "; ".join(f"`{' '.join(cmd)}`" for cmd in npm.pre_pack))
+        channels.append("- **npm package** (built by `vlr build-npm`): " + ", ".join(details))
+        for registry in config.npm_registries:
+            where = registry.registry or f"the URL in `{registry.registry_env}`"
+            channels.append(f"  - registry `{registry.name}`: {where} (auth `{registry.auth}`), published with `vlr publish-npm`")
     if config.source_archive is not None:
         channels.append("- **Source archive** of the prepared tree, attached to the GitHub release")
     if config.homebrew is not None:
