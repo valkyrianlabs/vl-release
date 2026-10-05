@@ -1,3 +1,18 @@
+vl-release (0.2.0-1) unstable; urgency=medium
+
+  * Add npm package releases: [npm] tarball contracts, `vlr build-npm`,
+    `vlr publish-npm` and `vlr verify-npm` for [[publish.npm]] registries.
+    - Idempotent, integrity-checked publication: every registry is planned
+      before any upload; identical dist.integrity is skipped, different bytes
+      are refused, dist-tags never move backwards.
+    - npm trusted publishing (OIDC), token and basic auth; credentials only in
+      a temporary 0600 userconfig.
+  * `vlr check` validates package.json for [npm]; `validate-artifacts`,
+    `artifacts`, `status`, `doctor` and the agent skill know about npm
+    packages.
+
+ -- Valkyrian Labs <maintainers@valkyrianlabs.com>  Mon, 05 Oct 2026 21:19:56 +0000
+
 vl-release (0.1.4-1) unstable; urgency=medium
 
   * publish-deb/verify-published: request dists/<suite>/InRelease (then
