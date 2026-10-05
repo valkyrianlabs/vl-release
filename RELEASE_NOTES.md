@@ -1,5 +1,16 @@
 # vl-release release notes
 
+<!-- vl-release:entry version=0.2.2 -->
+## 0.2.2 — Package builds are fast again
+
+_Released 2026-10-05_
+
+The Debian package build runs the test suite, and since 0.2.0 that took about four minutes on
+GitHub runners instead of about half a minute. 0.2.1 blamed npm; the test durations it added to
+the build log showed the real cost: the Debian build tests, which run a nested
+`dpkg-buildpackage` and take minutes inside the package build. Those tests are now skipped there
+(the regular test runs, including CI, still run them), so building the package is quick again.
+
 <!-- vl-release:entry version=0.2.1 -->
 ## 0.2.1 — Quieter npm builds, Python 3.12
 

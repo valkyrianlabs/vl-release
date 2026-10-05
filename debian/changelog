@@ -1,3 +1,11 @@
+vl-release (0.2.2-1) unstable; urgency=medium
+
+  * Skip the nested dpkg-buildpackage tests inside the package build
+    (VLR_PACKAGE_BUILD=1); the regular test runs keep them. The package build
+    is back to well under a minute on CI.
+
+ -- Valkyrian Labs <maintainers@valkyrianlabs.com>  Mon, 05 Oct 2026 21:41:59 +0000
+
 vl-release (0.2.1-1) unstable; urgency=medium
 
   * build-npm: send build and pack output to stderr so --json stays parseable;
