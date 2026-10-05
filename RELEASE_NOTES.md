@@ -1,5 +1,19 @@
 # vl-release release notes
 
+<!-- vl-release:entry version=0.2.1 -->
+## 0.2.1 — Quieter npm builds, Python 3.12
+
+_Released 2026-10-05_
+
+- `vlr build-npm --json` prints clean JSON again: the output of the build commands and of
+  `npm pack` now goes to stderr.
+- `vlr build-npm` packs with npm's update check, audit and funding notices turned off.
+- The Debian package build no longer lets the test suite's `npm pack` calls touch the network or
+  the npm cache. In v0.2.0 the package build took over three minutes on GitHub runners instead of
+  about half a minute. The build log now lists the slowest tests.
+- vl-release now requires Python 3.12 or newer (Ubuntu 24.04, Debian 13 and current Homebrew
+  all ship newer versions).
+
 <!-- vl-release:entry version=0.2.0 -->
 ## 0.2.0 — npm packages, from build to npmjs.com
 
