@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 import shutil
 import tarfile
 import unittest
@@ -49,6 +50,10 @@ class PreparedDebianRepo(RepoTestCase):
 
 
 @requires_tools("dpkg-buildpackage", "dpkg-deb", "dh")
+@unittest.skipIf(
+    os.environ.get("VLR_PACKAGE_BUILD") == "1",
+    "nested dpkg-buildpackage: covered by the regular test runs, and minutes slow inside the package build",
+)
 class DebianBuildTests(PreparedDebianRepo):
     def test_builds_from_prepared_work_tree_inside_the_project(self) -> None:
         root = self.prepared_repo()

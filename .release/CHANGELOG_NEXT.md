@@ -7,3 +7,5 @@ Format: one "- " bullet per change (concise, technical). Indent continuation lin
 Optional "## Section" headings group bullets; if used, every bullet must be under one.
 One level of nested "  - " detail bullets is allowed. Consolidate; don't paste commit logs.
 -->
+- Skip the nested dpkg-buildpackage tests inside the package build (VLR_PACKAGE_BUILD=1); the
+  regular test runs keep them. The package build is back to well under a minute on CI.
