@@ -29,6 +29,8 @@ _NPM_REGISTRY_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Tags npm accepts and that cannot be mistaken for a semver range.
 _NPM_DIST_TAG = re.compile(r"[a-z][a-z0-9._-]*")
+# npm package names: lowercase, optionally scoped, at most 214 characters (length checked by npm itself).
+_NPM_PACKAGE_NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
 _PACKAGE_NAME = re.compile(r"[a-z0-9][a-z0-9+.-]+")
 _DEBIAN_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9+.-]*")
 _REPOSITORY_SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -124,6 +126,18 @@ class AptConfig:
 
 
 @dataclass(frozen=True)
+class NpmAlias:
+    """Another npm name the same build is published under (`[[npm.aliases]]`).
+
+    The alias tarball is derived from the canonical one: identical members and bytes, except the
+    package.json `name` and, in each `rewrite` member, every occurrence of the canonical name.
+    """
+
+    name: str
+    rewrite: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class NpmConfig:
     """The npm package built from this repository (`vlr build-npm`)."""
 
@@ -137,6 +151,7 @@ class NpmConfig:
     dist_tag: str = "latest"
     maintenance_dist_tag: str = "maintenance"
     access: str = "public"
+    aliases: tuple[NpmAlias, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -676,6 +691,7 @@ def _parse_npm(table: _Table | None) -> NpmConfig | None:
         maintenance_dist_tag=table.string("maintenance_dist_tag", defaults.maintenance_dist_tag)
         or defaults.maintenance_dist_tag,
         access=table.string("access", defaults.access) or defaults.access,
+        aliases=_parse_npm_aliases(table.raw("aliases")),
     )
     table.finish()
     if config.packer not in NPM_PACKERS:
@@ -694,6 +710,35 @@ def _parse_npm(table: _Table | None) -> NpmConfig | None:
         if not pair.member.startswith("package/"):
             raise ConfigError(f"npm.identical_files member {pair.member!r} must start with \"package/\"")
     return config if enabled else None
+
+
+def _parse_npm_aliases(raw: Any) -> tuple[NpmAlias, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError("npm.aliases must be an array of tables ([[npm.aliases]], one per extra package name)")
+    aliases: list[NpmAlias] = []
+    for index, item in enumerate(raw):
+        where = f"npm.aliases[{index}]"
+        table = _Table(item, where)
+        alias = NpmAlias(
+            name=table.string("name", required=True) or "",
+            rewrite=tuple(_normalize_member(p) for p in table.strings("rewrite")),
+        )
+        table.finish()
+        if not _NPM_PACKAGE_NAME.fullmatch(alias.name):
+            raise ConfigError(f"{where}.name {alias.name!r} is not a valid npm package name")
+        for member in alias.rewrite:
+            if not member.startswith("package/") or member == "package/package.json" or "*" in member:
+                raise ConfigError(
+                    f"{where}.rewrite member {member!r} must be an exact tarball path under \"package/\" "
+                    "(package.json is always renamed)"
+                )
+        aliases.append(alias)
+    names = [alias.name for alias in aliases]
+    if len(names) != len(set(names)):
+        raise ConfigError("npm.aliases lists the same package name more than once")
+    return tuple(aliases)
 
 
 def _parse_npm_registries(raw: Any) -> tuple[NpmRegistryConfig, ...]:

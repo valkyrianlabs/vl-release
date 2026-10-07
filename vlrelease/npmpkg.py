@@ -3,14 +3,24 @@
 The tarball written to the output directory is the exact artifact that is checksummed, validated,
 attached to the GitHub release and published to every `[[publish.npm]]` registry; nothing repacks
 it later. Registries identify it by npm's `dist.integrity` (sha512) and `dist.shasum` (sha1).
+
+`[[npm.aliases]]` publish the same build under more names. Each alias tarball is derived from the
+canonical tarball's bytes (never from a second pack or build): the same members, modes and
+contents, except the package.json `name` and every occurrence of the canonical name in the
+alias's `rewrite` members. Validation re-derives every alias and requires an exact match, so the
+packages cannot drift apart.
 """
 
 from __future__ import annotations
 
 import base64
+import copy
+import gzip
 import hashlib
+import io
 import os
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -20,7 +30,7 @@ from pathlib import Path
 from typing import Callable
 
 from vlrelease.checksums import release_assets, sha256_file
-from vlrelease.config import Config, NpmConfig, normalize_member
+from vlrelease.config import Config, NpmAlias, NpmConfig, normalize_member
 from vlrelease.errors import ConfigError, ReleaseError
 from vlrelease.state import read_release_state
 
@@ -135,6 +145,116 @@ def require_publishable_manifest(manifest: NpmManifest, where: str) -> None:
         )
 
 
+def package_names(config: Config, manifest: NpmManifest) -> list[str]:
+    """Every name this build is published under: the package.json name first, then `[[npm.aliases]]`."""
+    names = [manifest.name, *(alias.name for alias in _npm(config).aliases)]
+    if manifest.name in names[1:]:
+        raise ConfigError(f"[[npm.aliases]] repeats the package.json name {manifest.name}")
+    tarballs = [tarball_name(name, manifest.version) for name in names]
+    if len(set(tarballs)) != len(tarballs):
+        raise ConfigError(f"npm package names {', '.join(names)} would share a tarball file name")
+    return names
+
+
+# --- aliases --------------------------------------------------------------------------------------
+
+
+def rename_manifest(raw: bytes, canonical: str, alias: str, where: str) -> bytes:
+    """package.json with only its top-level `name` changed, formatting untouched."""
+    try:
+        text = raw.decode("utf-8")
+        data = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseError(f"{where}: unreadable package.json: {exc}") from exc
+    if not isinstance(data, dict) or data.get("name") != canonical:
+        raise ReleaseError(f"{where}: package.json name is not {canonical}")
+    pattern = re.compile(r'("name"\s*:\s*)' + re.escape(json.dumps(canonical)))
+    if len(pattern.findall(text)) != 1:
+        raise ReleaseError(f'{where}: expected exactly one `"name": {json.dumps(canonical)}` in package.json')
+    renamed = pattern.sub(lambda match: match.group(1) + json.dumps(alias), text, count=1)
+    if json.loads(renamed) != {**data, "name": alias}:
+        raise ReleaseError(f"{where}: renaming package.json to {alias} changed more than its name")
+    return renamed.encode("utf-8")
+
+
+def alias_member(member: str, data: bytes, canonical: str, alias: NpmAlias, where: str) -> bytes:
+    """The bytes `member` must have in the alias tarball."""
+    if member == f"{TARBALL_ROOT}/{PACKAGE_JSON}":
+        return rename_manifest(data, canonical, alias.name, where)
+    if member in alias.rewrite:
+        needle = canonical.encode("utf-8")
+        if needle not in data:
+            raise ReleaseError(f"{where}: rewrite member {member} does not contain {canonical}")
+        return data.replace(needle, alias.name.encode("utf-8"))
+    return data
+
+
+def derive_alias_tarball(canonical_path: Path, canonical: str, alias: NpmAlias, destination: Path) -> None:
+    """Write the alias tarball for `alias` from the canonical tarball (deterministic: gzip mtime 0)."""
+    where = f"{destination.name} (alias of {canonical_path.name})"
+    found: set[str] = set()
+    try:
+        with tarfile.open(canonical_path, mode="r:gz") as source, destination.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as target:
+                    for info in source.getmembers():
+                        member = normalize_member(info.name).rstrip("/")
+                        extracted = source.extractfile(info) if info.isfile() else None
+                        if extracted is None:
+                            target.addfile(info)
+                            continue
+                        found.add(member)
+                        data = alias_member(member, extracted.read(), canonical, alias, where)
+                        entry = copy.copy(info)
+                        entry.size = len(data)
+                        target.addfile(entry, io.BytesIO(data))
+    except (OSError, tarfile.TarError) as exc:
+        destination.unlink(missing_ok=True)
+        raise ReleaseError(f"{where}: cannot derive the alias tarball: {exc}") from exc
+    except ReleaseError:
+        destination.unlink(missing_ok=True)
+        raise
+    missing = [member for member in alias.rewrite if member not in found]
+    if missing:
+        destination.unlink(missing_ok=True)
+        raise ReleaseError(f"{where}: rewrite members not in the tarball: {', '.join(missing)}")
+
+
+def check_alias_tarball(canonical_path: Path, canonical: str, alias: NpmAlias, alias_path: Path) -> list[str]:
+    """Issues when the alias tarball is not exactly what `derive_alias_tarball` makes of the canonical one."""
+    where = alias_path.name
+    try:
+        expected, actual = NpmTarballContents(canonical_path), NpmTarballContents(alias_path)
+    except ReleaseError as exc:
+        return [str(exc)]
+    issues: list[str] = []
+    if expected.members != actual.members:
+        extra = sorted(actual.members - expected.members)
+        missing = sorted(expected.members - actual.members)
+        issues.append(
+            f"{where}: members differ from {canonical_path.name}"
+            + (f"; extra: {', '.join(extra[:5])}" if extra else "")
+            + (f"; missing: {', '.join(missing[:5])}" if missing else "")
+        )
+    for member in sorted(expected.members & actual.members):
+        data = expected.read(member)
+        if expected.modes.get(member) != actual.modes.get(member):
+            issues.append(f"{where}: {member} has mode {actual.modes.get(member):o}, the canonical tarball {expected.modes.get(member):o}")
+        if data is None:
+            continue
+        try:
+            wanted = alias_member(member, data, canonical, alias, where)
+        except ReleaseError as exc:
+            issues.append(str(exc))
+            continue
+        if actual.read(member) != wanted:
+            issues.append(f"{where}: {member} is not the canonical {member} renamed for {alias.name}")
+    for member in alias.rewrite:
+        if member not in expected.members:
+            issues.append(f"{where}: rewrite member {member} is not in {canonical_path.name}")
+    return issues
+
+
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
@@ -146,8 +266,11 @@ class NpmBuildResult:
     dry_run: bool
     commands: list[list[str]] = field(default_factory=list)
     identity: NpmIdentity | None = None
+    aliases: list[tuple[str, Path]] = field(default_factory=list)  # (name, tarball)
+    alias_identities: list[NpmIdentity] = field(default_factory=list)
 
     def as_dict(self) -> dict:
+        identities = {identity.name: identity for identity in self.alias_identities}
         return {
             "name": self.name,
             "version": self.version,
@@ -156,6 +279,15 @@ class NpmBuildResult:
             "commands": self.commands,
             "sha256": self.identity.sha256 if self.identity else None,
             "integrity": self.identity.integrity if self.identity else None,
+            "aliases": [
+                {
+                    "name": name,
+                    "tarball": str(path),
+                    "sha256": identities[name].sha256 if name in identities else None,
+                    "integrity": identities[name].integrity if name in identities else None,
+                }
+                for name, path in self.aliases
+            ],
         }
 
 
@@ -206,9 +338,11 @@ def build_npm(
     require_publishable_manifest(manifest, f"{npm.package_dir}/{PACKAGE_JSON}")
     package_dir = config.resolve(npm.package_dir)
     output_dir = config.output_dir
+    names = package_names(config, manifest)
     tarball = output_dir / tarball_name(manifest.name, version)
     commands = [list(command) for command in npm.pre_pack] + [pack_command(npm.packer, output_dir)]
     result = NpmBuildResult(manifest.name, version, tarball, dry_run, commands)
+    result.aliases = [(name, output_dir / tarball_name(name, version)) for name in names[1:]]
     if dry_run:
         return result
 
@@ -224,6 +358,11 @@ def build_npm(
         raise ReleaseError(f"{npm.packer} pack did not write {tarball.name} to {output_dir} (found: {produced})")
     result.identity = identify_tarball(tarball, manifest.name, version)
     log(f"packed {tarball.name} sha256={result.identity.sha256} integrity={result.identity.integrity}")
+    for alias, (name, path) in zip(npm.aliases, result.aliases):
+        derive_alias_tarball(tarball, manifest.name, alias, path)
+        identity = identify_tarball(path, name, version)
+        result.alias_identities.append(identity)
+        log(f"derived {path.name} ({name}) sha256={identity.sha256} integrity={identity.integrity}")
     return result
 
 
@@ -232,6 +371,7 @@ class NpmTarballContents:
 
     def __init__(self, path: Path) -> None:
         self.members: set[str] = set()
+        self.modes: dict[str, int] = {}
         self._files: dict[str, bytes] = {}
         try:
             with tarfile.open(path, mode="r:gz") as archive:
@@ -240,6 +380,7 @@ class NpmTarballContents:
                     if not name:
                         continue
                     self.members.add(name)
+                    self.modes[name] = info.mode
                     if info.isfile():
                         extracted = archive.extractfile(info)
                         if extracted is not None:
@@ -302,27 +443,44 @@ def check_npm_tarball(config: Config, path: Path, version: str, expected_name: s
 
 
 def validate_npm_artifacts(config: Config, version: str) -> tuple[list[str], list[str]]:
-    """(issues, checked file names) for the npm tarball in the output directory."""
+    """(issues, checked file names) for the npm tarballs (canonical and aliases) in the output directory."""
     manifest = read_manifest(config)
-    expected = tarball_name(manifest.name, version)
-    tarballs = npm_tarballs(config.output_dir)
+    names = package_names(config, manifest)
+    expected = [tarball_name(name, version) for name in names]
     issues: list[str] = []
-    for extra in tarballs:
-        if extra.name != expected:
-            issues.append(f"unexpected npm tarball {extra.name} (expected only {expected})")
-    path = config.output_dir / expected
-    if not path.is_file():
-        issues.append(f"npm tarball {expected} is missing (run `vlr build-npm`)")
+    for extra in npm_tarballs(config.output_dir):
+        if extra.name not in expected:
+            issues.append(f"unexpected npm tarball {extra.name} (expected only {', '.join(expected)})")
+    canonical = config.output_dir / expected[0]
+    if not canonical.is_file():
+        issues.append(f"npm tarball {expected[0]} is missing (run `vlr build-npm`)")
         return issues, []
-    issues.extend(check_npm_tarball(config, path, version, manifest.name))
-    return issues, [expected]
+    issues.extend(check_npm_tarball(config, canonical, version, manifest.name))
+    checked = [expected[0]]
+    for alias, file_name in zip(_npm(config).aliases, expected[1:]):
+        path = config.output_dir / file_name
+        if not path.is_file():
+            issues.append(f"npm tarball {file_name} for alias {alias.name} is missing (run `vlr build-npm`)")
+            continue
+        issues.extend(check_npm_tarball(config, path, version, alias.name))
+        issues.extend(check_alias_tarball(canonical, manifest.name, alias, path))
+        checked.append(file_name)
+    return issues, checked
+
+
+def collect_npm_identities(config: Config) -> list[NpmIdentity]:
+    """The built tarballs for the prepared version (what `publish-npm` uploads): canonical first, then aliases."""
+    version, manifest = require_prepared_npm(config)
+    identities: list[NpmIdentity] = []
+    for name in package_names(config, manifest):
+        path = config.output_dir / tarball_name(name, version)
+        if not path.is_file():
+            raise ReleaseError(f"{path.name} is not under {config.output_dir}; run `vlr build-npm` first.")
+        identities.append(identify_tarball(path, name, version))
+    return identities
 
 
 def collect_npm_identity(config: Config) -> NpmIdentity:
-    """The built tarball for the prepared version (what `publish-npm` uploads)."""
-    version, manifest = require_prepared_npm(config)
-    path = config.output_dir / tarball_name(manifest.name, version)
-    if not path.is_file():
-        raise ReleaseError(f"{path.name} is not under {config.output_dir}; run `vlr build-npm` first.")
-    return identify_tarball(path, manifest.name, version)
+    """The canonical built tarball for the prepared version."""
+    return collect_npm_identities(config)[0]
 

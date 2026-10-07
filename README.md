@@ -100,7 +100,7 @@ HTML comments are ignored, so the reset templates are pure guidance. Placeholder
 | `vlr validate-artifacts [--json]` / `vlr artifacts [--json]` | Package contracts, checksums, staged assets / asset listing |
 | `vlr publish-deb [--dry-run] [--require-enabled]` | Idempotent, integrity-checked APT publication + verification |
 | `vlr verify-published [--timeout S]` | Wait until the APT index lists the built packages by sha256 |
-| `vlr build-npm` | Pack the npm package from the prepared work tree (`npm pack` or `pnpm pack`) |
+| `vlr build-npm` | Pack the npm package from the prepared work tree (`npm pack` or `pnpm pack`), plus one derived tarball per `[[npm.aliases]]` name |
 | `vlr publish-npm [--dry-run] [--registry NAME] [--require-enabled]` | Idempotent, integrity-checked publication to every `[[publish.npm]]` registry + verification |
 | `vlr verify-npm [--registry NAME] [--timeout S]` | Wait until the registries list the built tarball by integrity |
 | `vlr github-release` | Create/update the GitHub release and upload assets (idempotent) |
@@ -145,7 +145,9 @@ Publishing is boring and unforgiving:
   `npm publish`, with credentials in a temporary 0600 userconfig, then each registry is polled
   until it lists the integrity and the dist-tag. A release below the current `latest` is refused
   (or published under a maintenance tag), so `latest` never moves backwards. Trusted publishing
-  (GitHub OIDC) is supported without secrets.
+  (GitHub OIDC) is supported without secrets. `[[npm.aliases]]` publish the same build under more
+  names (e.g. scoped and unscoped): each alias tarball is derived from the canonical tarball's
+  bytes, validated to differ only in its name, and published alongside it.
 - **GitHub releases**: title/body come from the prepared entry; assets are never clobbered: an
   existing asset with different bytes is refused.
 - **Homebrew**: the formula points at the source-archive release asset; before touching the tap,
