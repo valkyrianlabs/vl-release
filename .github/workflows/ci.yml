@@ -14,38 +14,32 @@ concurrency:
 
 jobs:
   tests:
-    name: Tests (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.12", "3.14"]
+    name: Tests (Python 3.14)
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: ${{ matrix.python }}
+      - name: Python 3.14 (installed on the runner when missing)
+        run: bash .github/scripts/ensure-python.sh 3.14
 
       - name: Install packaging tools used by the integration tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential dpkg-dev debhelper dh-python
+        run: bash .github/scripts/ensure-apt-packages.sh build-essential dpkg-dev debhelper dh-python
 
       - name: Unit and integration tests
         run: python -m unittest discover -s tests -t . -v
 
   contract:
     name: Release contract and rehearsal
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.14"
+      - name: Python 3.14 (installed on the runner when missing)
+        run: bash .github/scripts/ensure-python.sh 3.14
 
       - name: Use vl-release from this checkout
         run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
@@ -58,10 +52,11 @@ jobs:
           vlr status --github-output
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential dpkg-dev debhelper dh-python ruby
+        run: bash .github/scripts/ensure-apt-packages.sh build-essential dpkg-dev debhelper dh-python ruby
 
       # A full local release (nothing is published): prepare this ephemeral checkout, build from it,
-      # validate, then install the built .deb and run it from the installed layout.
+      # validate, then run the built .deb from its extracted installed layout (not installed: the
+      # self-hosted runner keeps its released vl-release).
       - name: Release rehearsal
         if: steps.state.outputs.phase == 'pending' || steps.state.outputs.phase == 'prepared'
         run: |
@@ -73,10 +68,9 @@ jobs:
           vlr homebrew formula
           vlr checksums
           vlr validate-artifacts
-          sudo apt-get install -y ./release/vl-release_*_all.deb
-          /usr/bin/vl-release --version
-          /usr/bin/vlr doctor --strict
-          /usr/bin/vlr --repo "$GITHUB_WORKSPACE" check
+          bash .github/scripts/run-built-deb.sh vl-release --version
+          bash .github/scripts/run-built-deb.sh vlr doctor --strict
+          bash .github/scripts/run-built-deb.sh vlr --repo "$GITHUB_WORKSPACE" check
 
   homebrew:
     name: Homebrew formula (macOS)

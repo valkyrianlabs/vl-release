@@ -48,7 +48,7 @@ env:
 jobs:
   build:
     name: Prepare, build and validate
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       version: ${{ steps.state.outputs.version }}
       tag: ${{ steps.state.outputs.tag }}
@@ -60,9 +60,8 @@ jobs:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Python 3.14 (installed on the runner when missing)
+        run: bash .github/scripts/ensure-python.sh 3.14
 
       - name: Use vl-release from the release checkout
         run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
@@ -80,7 +79,7 @@ jobs:
         run: vlr check --release --tag "${RELEASE_REF#refs/tags/}"
 
       - name: Install build dependencies
-        run: sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends build-essential dpkg-dev debhelper dh-python ruby
+        run: bash .github/scripts/ensure-apt-packages.sh build-essential dpkg-dev debhelper dh-python ruby
 
       - name: Prepare release documents (work tree only)
         run: vlr prepare --record release/meta/prepare.json
@@ -99,13 +98,14 @@ jobs:
           vlr validate-artifacts
           vlr artifacts
 
-      - name: Smoke-test the installed package
+      # From the extracted package layout: the runner's own vl-release is only replaced by
+      # publish-apt, from the APT repository, once the release is published.
+      - name: Smoke-test the built package
         run: |
           set -euo pipefail
-          sudo -n apt-get install -y ./release/vl-release_*_all.deb
-          test "$(/usr/bin/vl-release --version)" = "vl-release ${{ steps.state.outputs.version }}"
-          /usr/bin/vlr --repo "$GITHUB_WORKSPACE" check
-          /usr/bin/vlr doctor
+          test "$(bash .github/scripts/run-built-deb.sh vl-release --version)" = "vl-release ${{ steps.state.outputs.version }}"
+          bash .github/scripts/run-built-deb.sh vlr --repo "$GITHUB_WORKSPACE" check
+          bash .github/scripts/run-built-deb.sh vlr doctor
 
       # Read-only: plans against the live index and fails now if this version was already published
       # with different bytes, before anything is published anywhere.
@@ -139,7 +139,7 @@ jobs:
 
   publish-apt:
     name: Publish to the ValkyrianLabs APT repository
-    runs-on: ${{ fromJSON(vars.RELEASE_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.RELEASE_RUNNER || '"self-hosted"') }}
     needs: [build, homebrew-check]
     if: needs.build.outputs.publish == 'true'
     environment: Production
@@ -153,9 +153,8 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Python 3.14 (installed on the runner when missing)
+        run: bash .github/scripts/ensure-python.sh 3.14
 
       - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
@@ -183,7 +182,7 @@ jobs:
 
   github-release:
     name: GitHub release
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [build, publish-apt]
     permissions:
       contents: write
@@ -195,9 +194,8 @@ jobs:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Python 3.14 (installed on the runner when missing)
+        run: bash .github/scripts/ensure-python.sh 3.14
 
       - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
@@ -213,7 +211,7 @@ jobs:
 
   homebrew-tap:
     name: Homebrew tap
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [build, github-release]
     environment: Production
     steps:
@@ -222,9 +220,8 @@ jobs:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Python 3.14 (installed on the runner when missing)
+        run: bash .github/scripts/ensure-python.sh 3.14
 
       - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
@@ -249,7 +246,7 @@ jobs:
 
   finalize:
     name: Record the release on main
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [build, publish-apt, github-release, homebrew-tap]
     permissions:
       contents: write
@@ -259,9 +256,8 @@ jobs:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Python 3.14 (installed on the runner when missing)
+        run: bash .github/scripts/ensure-python.sh 3.14
 
       - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
