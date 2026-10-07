@@ -2,6 +2,8 @@
 # Make Python >= VERSION (default 3.14) the `python`/`python3` of this job on the self-hosted
 # runner: reuse an installed interpreter when one is new enough, otherwise install
 # python<VERSION> from the deadsnakes PPA (Ubuntu). Prepends a shim directory to GITHUB_PATH.
+# apt refreshes its package lists at most once: `add-apt-repository` does it when the PPA is new,
+# otherwise `apt-get update` runs only if the install fails against the existing lists.
 # Usage: ensure-python.sh [VERSION]
 set -euo pipefail
 
@@ -22,13 +24,17 @@ done
 
 if [ -z "$python" ]; then
   echo "Python >= $want not found; installing python$want from ppa:deadsnakes/ppa"
+  packages=("python$want" "python$want-venv")
   if ! grep -rqs deadsnakes /etc/apt/sources.list.d/; then
+    if ! command -v add-apt-repository >/dev/null; then
+      sudo -n apt-get install -y --no-install-recommends software-properties-common
+    fi
+    sudo -n add-apt-repository -y ppa:deadsnakes/ppa # refreshes the package lists itself
+    sudo -n apt-get install -y --no-install-recommends "${packages[@]}"
+  elif ! sudo -n apt-get install -y --no-install-recommends "${packages[@]}"; then
     sudo -n apt-get update
-    sudo -n apt-get install -y --no-install-recommends software-properties-common
-    sudo -n add-apt-repository -y ppa:deadsnakes/ppa
+    sudo -n apt-get install -y --no-install-recommends "${packages[@]}"
   fi
-  sudo -n apt-get update
-  sudo -n apt-get install -y --no-install-recommends "python$want" "python$want-venv"
   python="$(command -v "python$want")"
   new_enough "$python" || { echo "installed $python is still older than $want" >&2; exit 1; }
 fi

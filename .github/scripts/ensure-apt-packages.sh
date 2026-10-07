@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Install the named Debian packages only when they are missing, so jobs on the persistent
-# self-hosted runner do not run `apt-get update` (or need the network) on every run.
+# self-hosted runner do not touch apt on every run. The install is tried against the existing
+# package lists first; `apt-get update` (slow when an upstream mirror is) runs at most once, only
+# when that fails.
 # Usage: ensure-apt-packages.sh PACKAGE...
 set -euo pipefail
 
@@ -15,5 +17,7 @@ if [ "${#missing[@]}" -eq 0 ]; then
 fi
 
 echo "installing: ${missing[*]}"
-sudo -n apt-get update
-sudo -n apt-get install -y --no-install-recommends "${missing[@]}"
+if ! sudo -n apt-get install -y --no-install-recommends "${missing[@]}"; then
+  sudo -n apt-get update
+  sudo -n apt-get install -y --no-install-recommends "${missing[@]}"
+fi
