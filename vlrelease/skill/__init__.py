@@ -136,6 +136,8 @@ def render_local_skill(config: Config) -> str:
         details = [f"packed with `{npm.packer}` from `{npm.package_dir}`", f"dist-tag `{npm.dist_tag}`"]
         if npm.pre_pack:
             details.append("pre-pack: " + "; ".join(f"`{' '.join(cmd)}`" for cmd in npm.pre_pack))
+        if npm.aliases:
+            details.append("also published as " + ", ".join(f"`{alias.name}`" for alias in npm.aliases) + " (`[[npm.aliases]]`, derived from the same tarball)")
         channels.append("- **npm package** (built by `vlr build-npm`): " + ", ".join(details))
         for registry in config.npm_registries:
             where = registry.registry or f"the URL in `{registry.registry_env}`"

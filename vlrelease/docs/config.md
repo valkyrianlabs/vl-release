@@ -122,8 +122,8 @@ Requires `[debian]`. Upload credentials and the upload URL come from the environ
 ## `[npm]`
 
 Enabled by its presence. `vlr build-npm` packs the package from the prepared work tree into the
-output directory; that tarball is checksummed, validated, attached to the GitHub release and
-published unchanged. The package name and version come from `package_dir/package.json`, which
+output directory (plus one derived tarball per `[[npm.aliases]]` name); those tarballs are
+checksummed, validated, attached to the GitHub release and published unchanged. The package name and version come from `package_dir/package.json`, which
 must be a version target (or the canonical version) and must not set `"private": true` or
 `publishConfig.registry`.
 
@@ -137,6 +137,38 @@ must be a version target (or the canonical version) and must not set `"private":
 | `dist_tag` | `"latest"` | dist-tag a release moves |
 | `maintenance_dist_tag` | `"maintenance"` | dist-tag for `publish-npm --allow-older-version` releases below `dist_tag`, which never moves backwards |
 | `access` | `"public"` | `public` or `restricted` (scoped packages) |
+| `aliases` | `[]` | `[[npm.aliases]]` tables: more names the same build is published under (below) |
+
+### `[[npm.aliases]]`
+
+Publish the same build under more package names, e.g. a scoped `@org/tool` and an unscoped
+`tool`. `vlr build-npm` packs once, then derives one tarball per alias **from the canonical
+tarball's bytes** (never a second pack or build): the same members, modes and contents, except
+
+- `package/package.json`, whose top-level `"name"` (and nothing else, formatting untouched) becomes
+  the alias, and
+- each `rewrite` member, in which every occurrence of the canonical name becomes the alias. Use it
+  only for files that must carry the package's own import specifier (e.g. a generated
+  `dist/package-name.js`); each listed member must exist and contain the canonical name.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | required | The alias package name (unique, not the package.json name, and not sharing its tarball file name) |
+| `rewrite` | `[]` | Exact tarball members (`package/...`, no globs, not `package/package.json`) to rename inside |
+
+`validate-artifacts` applies the `[npm]` contract to every tarball and re-derives each alias from
+the canonical tarball, failing on any difference in members, modes or bytes, so the packages
+cannot drift apart. `publish-npm` plans every name on every registry before uploading anything
+and uploads aliases before the canonical package (see `vlr help ci`).
+
+```toml
+[npm]
+pre_pack = [["pnpm", "build"]]
+
+[[npm.aliases]]
+name = "tool"
+rewrite = ["package/dist/package-name.js", "package/dist/package-name.js.map"]
+```
 
 ## `[[publish.npm]]`
 

@@ -56,11 +56,13 @@ def check_repository(config: Config, *, release: bool = False, tag: str | None =
                 report.errors.append(f"{config.homebrew.formula} needs top-level `url` and `sha256` lines")
 
     if config.npm is not None:
-        from vlrelease.npmpkg import PACKAGE_JSON, read_manifest, require_publishable_manifest
+        from vlrelease.npmpkg import PACKAGE_JSON, package_names, read_manifest, require_publishable_manifest
 
         manifest_path = (PurePosixPath(config.npm.package_dir) / PACKAGE_JSON).as_posix()
         try:
-            require_publishable_manifest(read_manifest(config), manifest_path)
+            manifest = read_manifest(config)
+            require_publishable_manifest(manifest, manifest_path)
+            package_names(config, manifest)
         except ReleaseError as exc:
             report.errors.append(str(exc))
         if manifest_path not in {spec.path for spec in config.version.all_targets}:

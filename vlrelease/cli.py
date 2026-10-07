@@ -390,8 +390,12 @@ def cmd_build_npm(args: argparse.Namespace) -> int:
         print(f"would pack {result.name}@{result.version} -> {result.tarball}")
         for command in result.commands:
             print(f"  $ {' '.join(command)}")
+        for name, path in result.aliases:
+            print(f"would derive {name}@{result.version} -> {path}")
     else:
         print(f"packed {result.name}@{result.version} -> {result.tarball}")
+        for name, path in result.aliases:
+            print(f"derived {name}@{result.version} -> {path}")
     return EXIT_OK
 
 
@@ -656,7 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("build-npm", cmd_build_npm, "pack the npm package from the prepared work tree into the output directory")
     p.add_argument("--no-clean", action="store_true", help="keep existing .tgz files in the output directory")
     p.add_argument("--dry-run", action="store_true", help="show the commands without running them")
-    p = add("publish-npm", cmd_publish_npm, "publish the npm tarball to the [[publish.npm]] registries (idempotent, verified)")
+    p = add("publish-npm", cmd_publish_npm, "publish the npm tarballs to the [[publish.npm]] registries (idempotent, verified)")
     p.add_argument("--registry", action="append", metavar="NAME", help="only this registry (repeatable; default: all)")
     p.add_argument("--mode", choices=("disabled", "enabled"), help="override RELEASE_PUBLISH_MODE")
     p.add_argument("--dry-run", action="store_true", help="plan against the live registries without uploading")
