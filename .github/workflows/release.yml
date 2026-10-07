@@ -81,7 +81,7 @@ jobs:
       - name: Refresh apt package lists (only if a build dependency cannot be installed from them)
         run: bash .github/scripts/apt-packages.sh refresh build-essential dpkg-dev debhelper dh-python ruby
 
-      - name: Install build dependencys (only the missing ones)
+      - name: Install missing build dependencies
         run: bash .github/scripts/apt-packages.sh install build-essential dpkg-dev debhelper dh-python ruby
 
       - name: Prepare release documents (work tree only)
