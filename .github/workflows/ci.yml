@@ -24,8 +24,11 @@ jobs:
       - name: Python 3.14 (installed on the runner when missing)
         run: bash .github/scripts/ensure-python.sh 3.14
 
-      - name: Install packaging tools used by the integration tests
-        run: bash .github/scripts/ensure-apt-packages.sh build-essential dpkg-dev debhelper dh-python
+      - name: Refresh apt package lists (only if a packaging tool cannot be installed from them)
+        run: bash .github/scripts/apt-packages.sh refresh build-essential dpkg-dev debhelper dh-python
+
+      - name: Install packaging tools (only the missing ones)
+        run: bash .github/scripts/apt-packages.sh install build-essential dpkg-dev debhelper dh-python
 
       - name: Unit and integration tests
         run: python -m unittest discover -s tests -t . -v
@@ -51,8 +54,11 @@ jobs:
           vlr install-skill --check
           vlr status --github-output
 
-      - name: Install build dependencies
-        run: bash .github/scripts/ensure-apt-packages.sh build-essential dpkg-dev debhelper dh-python ruby
+      - name: Refresh apt package lists (only if a build dependency cannot be installed from them)
+        run: bash .github/scripts/apt-packages.sh refresh build-essential dpkg-dev debhelper dh-python ruby
+
+      - name: Install build dependencys (only the missing ones)
+        run: bash .github/scripts/apt-packages.sh install build-essential dpkg-dev debhelper dh-python ruby
 
       # A full local release (nothing is published): prepare this ephemeral checkout, build from it,
       # validate, then run the built .deb from its extracted installed layout (not installed: the

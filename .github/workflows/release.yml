@@ -78,8 +78,11 @@ jobs:
       - name: Release gate
         run: vlr check --release --tag "${RELEASE_REF#refs/tags/}"
 
-      - name: Install build dependencies
-        run: bash .github/scripts/ensure-apt-packages.sh build-essential dpkg-dev debhelper dh-python ruby
+      - name: Refresh apt package lists (only if a build dependency cannot be installed from them)
+        run: bash .github/scripts/apt-packages.sh refresh build-essential dpkg-dev debhelper dh-python ruby
+
+      - name: Install build dependencys (only the missing ones)
+        run: bash .github/scripts/apt-packages.sh install build-essential dpkg-dev debhelper dh-python ruby
 
       - name: Prepare release documents (work tree only)
         run: vlr prepare --record release/meta/prepare.json
