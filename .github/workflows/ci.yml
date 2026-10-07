@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Stock image for clean-install smoke tests (same digest as ci/Containerfile's base).
+  UBUNTU_IMAGE: docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -15,37 +19,32 @@ concurrency:
 jobs:
   tests:
     name: Tests (Python 3.14)
-    runs-on: self-hosted
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'self-hosted' }}
+    # Every run step executes in the disposable CI container (ci/Containerfile, rootless Podman):
+    # no host sudo, host packages or Docker. Pull requests from forks run on GitHub-hosted runners.
+    defaults:
+      run:
+        shell: bash ./ci/run-ci bash -euo pipefail {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-
-      - name: Python 3.14 (installed on the runner when missing)
-        run: bash .github/scripts/ensure-python.sh 3.14
-
-      - name: Refresh apt package lists (only if a packaging tool cannot be installed from them)
-        run: bash .github/scripts/apt-packages.sh refresh build-essential dpkg-dev debhelper dh-python
-
-      - name: Install missing packaging tools
-        run: bash .github/scripts/apt-packages.sh install build-essential dpkg-dev debhelper dh-python
 
       - name: Unit and integration tests
         run: python -m unittest discover -s tests -t . -v
 
   contract:
     name: Release contract and rehearsal
-    runs-on: self-hosted
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'self-hosted' }}
+    # Every run step executes in the disposable CI container (ci/Containerfile, rootless Podman):
+    # no host sudo, host packages or Docker. Pull requests from forks run on GitHub-hosted runners.
+    defaults:
+      run:
+        shell: bash ./ci/run-ci bash -euo pipefail {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-
-      - name: Python 3.14 (installed on the runner when missing)
-        run: bash .github/scripts/ensure-python.sh 3.14
-
-      - name: Use vl-release from this checkout
-        run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
       - name: Repository contract
         id: state
@@ -54,19 +53,11 @@ jobs:
           vlr install-skill --check
           vlr status --github-output
 
-      - name: Refresh apt package lists (only if a build dependency cannot be installed from them)
-        run: bash .github/scripts/apt-packages.sh refresh build-essential dpkg-dev debhelper dh-python ruby
-
-      - name: Install missing build dependencies
-        run: bash .github/scripts/apt-packages.sh install build-essential dpkg-dev debhelper dh-python ruby
-
-      # A full local release (nothing is published): prepare this ephemeral checkout, build from it,
-      # validate, then run the built .deb from its extracted installed layout (not installed: the
-      # self-hosted runner keeps its released vl-release).
+      # A full local release (nothing is published): prepare this ephemeral checkout, build from it
+      # and validate.
       - name: Release rehearsal
         if: steps.state.outputs.phase == 'pending' || steps.state.outputs.phase == 'prepared'
         run: |
-          set -euo pipefail
           vlr prepare
           vlr build-deb
           sed -n '/Slowest test durations/,/^$/p' release/build-deb.log
@@ -74,9 +65,21 @@ jobs:
           vlr homebrew formula
           vlr checksums
           vlr validate-artifacts
-          bash .github/scripts/run-built-deb.sh vl-release --version
-          bash .github/scripts/run-built-deb.sh vlr doctor --strict
-          bash .github/scripts/run-built-deb.sh vlr --repo "$GITHUB_WORKSPACE" check
+
+      # Install the built .deb into a clean, stock Ubuntu 24.04 (container root, no host access)
+      # and run it from the installed layout.
+      - name: Clean-install smoke test of the built package
+        if: steps.state.outputs.phase == 'pending' || steps.state.outputs.phase == 'prepared'
+        shell: bash
+        run: |
+          ./ci/run-ci --image "$UBUNTU_IMAGE" --root bash -euo pipefail -c '
+            apt-get update
+            apt-get install -y --no-install-recommends ./release/vl-release_*_all.deb dpkg-dev curl git
+            git config --system --add safe.directory /workspace
+            /usr/bin/vl-release --version
+            /usr/bin/vlr doctor --strict
+            /usr/bin/vlr --repo /workspace check
+          '
 
   homebrew:
     name: Homebrew formula (macOS)

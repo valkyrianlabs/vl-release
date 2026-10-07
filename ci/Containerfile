@@ -1,0 +1,60 @@
+# CI build/test environment for vl-release (built and run by ci/run-ci; nothing here touches the
+# host).
+#
+# Ubuntu 24.04 (the release target), Python 3.14 from the deadsnakes PPA as `python`/`python3`
+# on PATH (the system /usr/bin/python3 stays 3.12 for dh-python package builds), the Debian
+# packaging toolchain, ruby (Homebrew formula rendering), Node/npm (tests/test_npm.py runs
+# `npm pack`) and the GitHub CLI (`vlr github-release`).
+FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+
+ARG NODE_VERSION=24.21.0
+ARG PYTHON_VERSION=3.14
+# Passed by ci/run-ci (it tags images with the ValkyrianLabs tool versions); unused here.
+ARG VALKYRIANLABS_TOOLS=""
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/home/ci \
+    CI=true
+
+# Base tools. sudo is for CI steps that want root inside the container; every user in this
+# container may use it, and container root is an unprivileged subordinate uid on the host.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl git gnupg sudo xz-utils software-properties-common \
+      build-essential dpkg-dev debhelper dh-python python3 python3-all ruby \
+ && add-apt-repository -y ppa:deadsnakes/ppa \
+ && apt-get install -y --no-install-recommends "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" \
+ && ln -s "/usr/bin/python${PYTHON_VERSION}" /usr/local/bin/python \
+ && ln -s "/usr/bin/python${PYTHON_VERSION}" /usr/local/bin/python3 \
+ && echo 'ALL ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/ci \
+ && chmod 0440 /etc/sudoers.d/ci \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node from nodejs.org, verified against the release's SHASUMS256.txt.
+RUN set -eux; \
+    cd /tmp; \
+    file="node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${file}"; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" | grep " ${file}\$" | sha256sum -c -; \
+    tar -xJf "$file" -C /usr/local --strip-components=1 --no-same-owner; \
+    rm -f "$file"; \
+    node --version; npm --version
+
+# GitHub CLI from its signed APT repository.
+RUN set -eux; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli.gpg; \
+    chmod 0644 /etc/apt/keyrings/githubcli.gpg; \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gh; \
+    rm -rf /var/lib/apt/lists/*; \
+    gh --version | head -1
+
+# HOME for whichever host uid ci/run-ci maps in (--userns=keep-id).
+RUN install -d -m 1777 /home/ci
+
+# CI always runs vl-release from the checkout under test (bin/vlr), never an installed copy.
+ENV PATH=/workspace/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+WORKDIR /workspace

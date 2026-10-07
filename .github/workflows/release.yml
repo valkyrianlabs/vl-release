@@ -4,8 +4,10 @@
 #
 # build ─▶ homebrew-check ─▶ publish-apt ─▶ github-release ─▶ homebrew-tap ─▶ finalize
 #
-# Every job checks out the release tag and runs vlr from that checkout (python3 -m vlrelease via
-# bin/), so the tool always releases itself with its own code. `vlr prepare` is deterministic,
+# Every job checks out the release tag and runs vlr from that checkout (bin/ is first on PATH in
+# the CI container), so the tool always releases itself with its own code. Linux jobs run every
+# step in the disposable CI container (ci/run-ci, rootless Podman): no host sudo, host packages or
+# Docker on the self-hosted runner; only the Homebrew install check runs on GitHub's macOS. `vlr prepare` is deterministic,
 # so later jobs re-run it and get byte-identical documents; `finalize --record` proves it.
 # Nothing is written back to the repository unless every publication step succeeded.
 #
@@ -14,7 +16,7 @@
 #   vars.NEXUS_APT_REPO                          Nexus APT upload URL, e.g. https://apt.valkyrianlabs.com (org variable)
 #   secrets.HOMEBREW_TAP_TOKEN                   push access to valkyrianlabs/homebrew-tap
 #   vars.RELEASE_PUBLISH_MODE   (optional)       `nexus` (default here) or `disabled`
-#   vars.RELEASE_RUNNER         (optional)       JSON runner spec for publishing jobs, e.g. '["self-hosted","Linux"]'
+#   vars.RELEASE_RUNNER         (optional)       JSON runner spec for publish-apt, e.g. '["self-hosted","Linux"]'
 
 name: Release
 
@@ -44,11 +46,17 @@ concurrency:
 env:
   RELEASE_REF: ${{ github.event.inputs.ref || github.ref }}
   PYTHON_VERSION: "3.14"
+  # Stock image for clean-install smoke tests (same digest as ci/Containerfile's base).
+  UBUNTU_IMAGE: docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 jobs:
   build:
     name: Prepare, build and validate
     runs-on: self-hosted
+    # Every run step executes in the disposable CI container (ci/Containerfile, rootless Podman).
+    defaults:
+      run:
+        shell: bash ./ci/run-ci bash -euo pipefail {0}
     outputs:
       version: ${{ steps.state.outputs.version }}
       tag: ${{ steps.state.outputs.tag }}
@@ -59,12 +67,6 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
-
-      - name: Python 3.14 (installed on the runner when missing)
-        run: bash .github/scripts/ensure-python.sh 3.14
-
-      - name: Use vl-release from the release checkout
-        run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
       - name: Publication mode
         id: mode
@@ -77,12 +79,6 @@ jobs:
 
       - name: Release gate
         run: vlr check --release --tag "${RELEASE_REF#refs/tags/}"
-
-      - name: Refresh apt package lists (only if a build dependency cannot be installed from them)
-        run: bash .github/scripts/apt-packages.sh refresh build-essential dpkg-dev debhelper dh-python ruby
-
-      - name: Install missing build dependencies
-        run: bash .github/scripts/apt-packages.sh install build-essential dpkg-dev debhelper dh-python ruby
 
       - name: Prepare release documents (work tree only)
         run: vlr prepare --record release/meta/prepare.json
@@ -101,14 +97,21 @@ jobs:
           vlr validate-artifacts
           vlr artifacts
 
-      # From the extracted package layout: the runner's own vl-release is only replaced by
-      # publish-apt, from the APT repository, once the release is published.
-      - name: Smoke-test the built package
+      # Install the built .deb into a clean, stock Ubuntu 24.04 (container root, no host access)
+      # and run it from the installed layout.
+      - name: Clean-install smoke test of the built package
+        shell: bash
+        env:
+          VERSION: ${{ steps.state.outputs.version }}
         run: |
-          set -euo pipefail
-          test "$(bash .github/scripts/run-built-deb.sh vl-release --version)" = "vl-release ${{ steps.state.outputs.version }}"
-          bash .github/scripts/run-built-deb.sh vlr --repo "$GITHUB_WORKSPACE" check
-          bash .github/scripts/run-built-deb.sh vlr doctor
+          ./ci/run-ci --image "$UBUNTU_IMAGE" --root bash -euo pipefail -c '
+            apt-get update
+            apt-get install -y --no-install-recommends ./release/vl-release_*_all.deb git
+            git config --system --add safe.directory /workspace
+            test "$(/usr/bin/vl-release --version)" = "vl-release $VERSION"
+            /usr/bin/vlr --repo /workspace check
+            /usr/bin/vlr doctor
+          '
 
       # Read-only: plans against the live index and fails now if this version was already published
       # with different bytes, before anything is published anywhere.
@@ -146,6 +149,10 @@ jobs:
     needs: [build, homebrew-check]
     if: needs.build.outputs.publish == 'true'
     environment: Production
+    # Every run step executes in the disposable CI container (ci/Containerfile, rootless Podman).
+    defaults:
+      run:
+        shell: bash ./ci/run-ci bash -euo pipefail {0}
     env:
       RELEASE_PUBLISH_MODE: ${{ vars.RELEASE_PUBLISH_MODE || 'nexus' }}
       NEXUS_APT_REPO: ${{ vars.NEXUS_APT_REPO }}
@@ -155,11 +162,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.RELEASE_REF }}
-
-      - name: Python 3.14 (installed on the runner when missing)
-        run: bash .github/scripts/ensure-python.sh 3.14
-
-      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -171,21 +173,33 @@ jobs:
       - name: Publish and verify
         run: vlr publish-deb --require-enabled
 
+      # The published package installs from the APT repository into a clean, stock Ubuntu 24.04
+      # (container root, no host access); the runner host's own packages are not touched.
       - name: Install from the APT repository
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          DEBIAN_VERSION: ${{ needs.build.outputs.debian_version }}
         run: |
-          set -euo pipefail
-          sudo -n install -d -m 0755 /etc/apt/keyrings
-          curl -fsSL https://apt.valkyrianlabs.com/pubkey.gpg -o valkyrianlabs.gpg
-          sudo -n install -m 0644 valkyrianlabs.gpg /etc/apt/keyrings/valkyrianlabs.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/valkyrianlabs.gpg] https://apt.valkyrianlabs.com stable main" \
-            | sudo -n tee /etc/apt/sources.list.d/valkyrianlabs.list > /dev/null
-          sudo -n apt-get update
-          sudo -n apt-get install -y "vl-release=${{ needs.build.outputs.debian_version }}"
-          test "$(/usr/bin/vl-release --version)" = "vl-release ${{ needs.build.outputs.version }}"
+          ./ci/run-ci --image "$UBUNTU_IMAGE" --root bash -euo pipefail -c '
+            apt-get update
+            apt-get install -y --no-install-recommends ca-certificates curl
+            install -d -m 0755 /etc/apt/keyrings
+            curl -fsSL https://apt.valkyrianlabs.com/pubkey.gpg -o /etc/apt/keyrings/valkyrianlabs.gpg
+            echo "deb [signed-by=/etc/apt/keyrings/valkyrianlabs.gpg] https://apt.valkyrianlabs.com stable main" \
+              > /etc/apt/sources.list.d/valkyrianlabs.list
+            apt-get update
+            apt-get install -y "vl-release=$DEBIAN_VERSION"
+            test "$(/usr/bin/vl-release --version)" = "vl-release $VERSION"
+          '
 
   github-release:
     name: GitHub release
     runs-on: self-hosted
+    # Every run step executes in the disposable CI container (ci/Containerfile, rootless Podman).
+    defaults:
+      run:
+        shell: bash ./ci/run-ci bash -euo pipefail {0}
     needs: [build, publish-apt]
     permissions:
       contents: write
@@ -196,11 +210,6 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
-
-      - name: Python 3.14 (installed on the runner when missing)
-        run: bash .github/scripts/ensure-python.sh 3.14
-
-      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -215,6 +224,10 @@ jobs:
   homebrew-tap:
     name: Homebrew tap
     runs-on: self-hosted
+    # Every run step executes in the disposable CI container (ci/Containerfile, rootless Podman).
+    defaults:
+      run:
+        shell: bash ./ci/run-ci bash -euo pipefail {0}
     needs: [build, github-release]
     environment: Production
     steps:
@@ -222,11 +235,6 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
-
-      - name: Python 3.14 (installed on the runner when missing)
-        run: bash .github/scripts/ensure-python.sh 3.14
-
-      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -250,6 +258,10 @@ jobs:
   finalize:
     name: Record the release on main
     runs-on: self-hosted
+    # Every run step executes in the disposable CI container (ci/Containerfile, rootless Podman).
+    defaults:
+      run:
+        shell: bash ./ci/run-ci bash -euo pipefail {0}
     needs: [build, publish-apt, github-release, homebrew-tap]
     permissions:
       contents: write
@@ -258,11 +270,6 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
-
-      - name: Python 3.14 (installed on the runner when missing)
-        run: bash .github/scripts/ensure-python.sh 3.14
-
-      - run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
