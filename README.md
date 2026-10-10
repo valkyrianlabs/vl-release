@@ -104,7 +104,7 @@ HTML comments are ignored, so the reset templates are pure guidance. Placeholder
 | `vlr publish-npm [--dry-run] [--registry NAME] [--require-enabled]` | Idempotent, integrity-checked publication to every `[[publish.npm]]` registry + verification |
 | `vlr verify-npm [--registry NAME] [--timeout S]` | Wait until the registries list the built tarball by integrity |
 | `vlr github-release` | Create/update the GitHub release and upload assets (idempotent) |
-| `vlr cut patch\|minor\|major\|X.Y.Z [--push]` | Bump, commit, annotated tag, atomic push (resumable) |
+| `vlr cut patch\|minor\|major\|X.Y.Z [--push]` | Bump, commit, annotated tag, atomic push (resumable; the release commit must be a pure version bump) |
 | `vlr finalize [--record FILE]` | After publication: commit the promoted history + cleared `_NEXT` to the branch |
 | `vlr install-skill` / `vlr install-local-skill` | Generic agent skill / this repository's `PROJECT.md` |
 | `vlr help config\|staging\|ci` | Offline references |

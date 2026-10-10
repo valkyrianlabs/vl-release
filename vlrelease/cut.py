@@ -4,6 +4,9 @@ The tag push is what triggers the release workflow. The release documentation is
 here: the tag carries the populated `_NEXT` files and CI's `vlr prepare` promotes them, so a
 failed release never loses staged text. Every step is resumable: re-running continues from
 the state it finds (release commit present -> tag it; local tag present -> push it).
+A release commit must be a pure version bump: before anything is tagged or pushed, every commit `vlr cut` would
+publish is checked against the exact substitution `vlr version` makes (`_require_version_only`), so a resumed
+release commit amended with other changes is refused instead of released under the release subject.
 Adapted from vaulthalla's tools/release/cut.py.
 """
 
@@ -18,8 +21,9 @@ from vlrelease.config import Config
 from vlrelease.errors import ReleaseError
 from vlrelease.fsutil import read_text_or_empty
 from vlrelease.gitutil import dirty_tracked_paths, git_out, rev, run_git
-from vlrelease.semver import resolve_target
+from vlrelease.semver import Version, resolve_target
 from vlrelease.state import read_release_state
+from vlrelease.targets import TargetError, replace_version_text
 from vlrelease.versioning import apply_version, require_consistent_version
 
 
@@ -49,6 +53,60 @@ def _require_staged_docs(config: Config) -> None:
     if problems:
         raise ReleaseError(
             "Refusing to cut a release whose staged documentation would fail `vlr prepare` in CI: " + "; ".join(problems)
+        )
+
+
+def _version_only_problems(config: Config, base: str, target: str | None, version: Version) -> list[str]:
+    """What, besides `vlr version`'s own substitution to `version`, changes from `base` to `target` (None: the index).
+
+    Exact, not a line heuristic: each version file must be byte-identical to the base content with the version
+    replaced by `replace_version_text`, nothing else may change (no other path, mode, rename or deletion), and the
+    canonical version must actually change. Anything unreadable is a problem: the check fails closed.
+    """
+    root = config.root
+    diff = ["diff", "--raw", "--no-renames", "-z", base] + ([target] if target else ["--cached"])
+    fields = [item for item in run_git(diff, cwd=root).stdout.split("\0") if item]
+    targets = {spec.path: spec for spec in config.version.all_targets}
+    problems: list[str] = []
+    changed: set[str] = set()
+    for meta, path in zip(fields[0::2], fields[1::2]):
+        old_mode, new_mode, _old, _new, status = meta.lstrip(":").split(" ")
+        changed.add(path)
+        if path not in targets:
+            problems.append(f"{path} is not a version file")
+        elif status != "M" or old_mode != new_mode:
+            problems.append(f"{path} is {'renamed, added or deleted' if status != 'M' else 'changed in mode'}")
+    if len(fields) % 2:
+        problems.append("the diff could not be parsed")
+    canonical = config.version.canonical.path
+    if canonical not in changed:
+        problems.append(f"the canonical {canonical} does not change")
+    for path in sorted(changed & set(targets)):
+        before = run_git(["show", f"{base}:{path}"], cwd=root, check=False)
+        after = run_git(["show", f"{target}:{path}" if target else f":{path}"], cwd=root, check=False)
+        if before.returncode != 0 or after.returncode != 0:
+            problems.append(f"{path} could not be read")
+            continue
+        try:
+            expected = replace_version_text(targets[path], before.stdout, version)
+        except (TargetError, ValueError) as exc:
+            problems.append(f"{path}: {exc}")
+            continue
+        if after.stdout != expected:
+            problems.append(f"{path} changes more than its version (expected only the bump to {version})")
+    return problems
+
+
+def _require_version_only(config: Config, base: str, target: str | None, version: Version, tag: str, hint: str) -> None:
+    problems = _version_only_problems(config, base, target, version)
+    if problems:
+        what = f"the release commit {target[:12]}" if target else "the staged release commit"
+        rendered = "\n".join(f"  - {problem}" for problem in problems)
+        raise ReleaseError(
+            f"Refusing to release {tag}: {what} must be a pure version bump on top of "
+            f"{config.release.remote}/{config.release.branch}, but:\n{rendered}\n"
+            "A release commit is only VERSION and the configured version targets, changed by `vlr version`; "
+            f"other changes ship untested under the release subject. {hint}"
         )
 
 
@@ -103,10 +161,23 @@ def cut_release(
             raise ReleaseError(f"Local tag {tag} exists but does not point at a release commit for {version} at HEAD.")
         if head != remote_head and parent != remote_head:
             raise ReleaseError(f"Local tag {tag} is not exactly one commit ahead of {remote}/{branch}.")
+        if head != remote_head:
+            _require_version_only(
+                config, remote_head, head, version, tag,
+                f"Delete the local tag (`git tag -d {tag}`), move the other changes into their own commit on "
+                f"{branch} (`git reset --soft {remote}/{branch}` and commit them separately), push them, and cut again.",
+            )
+            actions.append("check: release commit is a pure version bump")
         actions.append(f"resume: local tag {tag} found")
     elif head_release == str(version):
         if parent != remote_head:
             raise ReleaseError(f"The release commit for {tag} is not directly on top of {remote}/{branch}.")
+        _require_version_only(
+            config, remote_head, head, version, tag,
+            f"Move the other changes into their own commit on {branch} (`git reset --soft {remote}/{branch}` and "
+            "commit them separately), push them, and cut again.",
+        )
+        actions.append("check: release commit is a pure version bump")
         _require_staged_docs(config)
         run_git(["tag", "-a", tag, "-m", f"{config.project.name} {tag}"], cwd=root)
         actions.append(f"resume: tagged the existing release commit as {tag}")
@@ -135,6 +206,12 @@ def cut_release(
             if not changed:
                 raise ReleaseError(f"Setting {version} changed no files")
             run_git(["add", "--", *changed], cwd=root)
+            try:
+                _require_version_only(config, head, None, version, tag, "This is a vl-release bug; nothing was committed.")
+            except ReleaseError:
+                run_git(["reset", "-q", "--", *changed], cwd=root)
+                run_git(["checkout", "-q", "--", *changed], cwd=root)
+                raise
             message = config.release.cut_commit_message.format(version=version, tag=tag, name=config.project.name)
             run_git(["commit", "-q", "-m", message], cwd=root)
             actions.append(f"commit: {message}")

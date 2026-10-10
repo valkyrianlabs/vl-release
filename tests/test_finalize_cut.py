@@ -190,5 +190,83 @@ class CutTests(RemoteTestCase):
         self.assertEqual(self.read(root, "VERSION"), "1.2.0\n")
 
 
+class CutVersionOnlyGuardTests(RemoteTestCase):
+    """A release commit is published only when it is exactly `vlr version`'s bump; resumes push HEAD as it is."""
+
+    def quiet(self, root: Path, target: str, **kwargs):
+        return cut_release(self.config(root), target, log=lambda _l: None, **kwargs)
+
+    def assert_nothing_published(self, root: Path, bare: Path, tag: str, before: str) -> None:
+        self.assertEqual(git(bare, "rev-parse", "main"), before)
+        self.assertEqual(git(bare, "tag", "--list", tag), "")
+
+    def test_pure_bumps_still_release_fresh_and_resumed(self) -> None:
+        root, bare = self.with_remote(version="1.2.0")
+        self.quiet(root, "patch", push=True)
+        self.assertEqual(git(bare, "rev-parse", "v1.2.1^{commit}"), git(root, "rev-parse", "HEAD"))
+        # Interrupted after the commit, before the tag (the tag was never made): resume tags and pushes it.
+        self.quiet(root, "minor")
+        git(root, "tag", "-d", "v1.3.0")
+        resumed = self.quiet(root, "1.3.0", push=True)
+        self.assertIn("check: release commit is a pure version bump", resumed.actions)
+        self.assertIn("resume: tagged the existing release commit as v1.3.0", resumed.actions)
+        # Interrupted after the tag, before the push: resume pushes it.
+        self.quiet(root, "minor")
+        resumed = self.quiet(root, "1.4.0", push=True)
+        self.assertIn("check: release commit is a pure version bump", resumed.actions)
+        self.assertEqual(git(bare, "rev-parse", "v1.4.0^{commit}"), git(root, "rev-parse", "HEAD"))
+
+    def test_amended_release_commit_is_refused_on_resume(self) -> None:
+        root, bare = self.with_remote(version="1.2.0")
+        before = git(bare, "rev-parse", "main")
+        self.quiet(root, "minor")  # commit + local tag, not pushed
+        self.write(root, "src.txt", "real change\n")
+        git(root, "add", "src.txt")
+        git(root, "commit", "-q", "--amend", "--no-edit")
+        git(root, "tag", "-f", "-a", "v1.3.0", "-m", "Demo v1.3.0")
+        with self.assertRaisesRegex(ReleaseError, r"(?s)Refusing to release v1\.3\.0.*src\.txt is not a version file"):
+            self.quiet(root, "1.3.0", push=True)
+        self.assert_nothing_published(root, bare, "v1.3.0", before)
+        # Same commit without its tag (the subject-based resume): refused before anything is tagged.
+        git(root, "tag", "-d", "v1.3.0")
+        with self.assertRaisesRegex(ReleaseError, "src.txt is not a version file"):
+            self.quiet(root, "1.3.0", push=True)
+        self.assertEqual(git(root, "tag", "--list", "v1.3.0"), "")
+        self.assert_nothing_published(root, bare, "v1.3.0", before)
+
+    def test_version_file_edited_beyond_its_version_is_refused(self) -> None:
+        root, bare = self.with_remote(version="1.2.0")
+        before = git(bare, "rev-parse", "main")
+        self.quiet(root, "minor")
+        self.write(root, "package.json", self.read(root, "package.json").replace('"version"', '"private": true,\n  "version"'))
+        git(root, "commit", "-q", "-a", "--amend", "--no-edit")
+        git(root, "tag", "-f", "-a", "v1.3.0", "-m", "Demo v1.3.0")
+        with self.assertRaisesRegex(ReleaseError, "package.json changes more than its version"):
+            self.quiet(root, "1.3.0", push=True)
+        self.assert_nothing_published(root, bare, "v1.3.0", before)
+
+    def test_hand_tagged_commit_that_does_not_bump_is_refused(self) -> None:
+        # VERSION already says 1.2.0 (never released); a code commit tagged by hand is not a release commit.
+        root, bare = self.with_remote(version="1.2.0")
+        before = git(bare, "rev-parse", "main")
+        self.write(root, "src.txt", "feature\n")
+        git(root, "add", "src.txt")
+        git(root, "commit", "-q", "-m", "feature work")
+        git(root, "tag", "-a", "v1.2.0", "-m", "Demo v1.2.0")
+        with self.assertRaisesRegex(ReleaseError, r"(?s)src\.txt is not a version file.*canonical VERSION does not change"):
+            self.quiet(root, "1.2.0", push=True)
+        self.assert_nothing_published(root, bare, "v1.2.0", before)
+
+    def test_mode_change_on_a_version_file_is_refused(self) -> None:
+        root, bare = self.with_remote(version="1.2.0")
+        self.quiet(root, "minor")
+        (root / "VERSION").chmod(0o755)
+        git(root, "add", "VERSION")
+        git(root, "commit", "-q", "--amend", "--no-edit")
+        git(root, "tag", "-f", "-a", "v1.3.0", "-m", "Demo v1.3.0")
+        with self.assertRaisesRegex(ReleaseError, "VERSION is changed in mode"):
+            self.quiet(root, "1.3.0", push=True)
+
+
 if __name__ == "__main__":
     unittest.main()
