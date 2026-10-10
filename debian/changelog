@@ -1,3 +1,23 @@
+vl-release (0.5.0-1) unstable; urgency=medium
+
+  * Add [version] policy: "semver" (default, unchanged) or "debian-upstream"
+    for repositories that package upstream software. Versions are
+    UPSTREAM-REVISION (8.0.2-1), ordered like dpkg, and used unchanged as tag,
+    release-notes entry and Debian package version.
+    - New `vlr version bump revision` and `vlr version upstream X.Y.Z`
+      (revision restarts at 1); `vlr cut revision`. patch|minor|major are
+      refused under debian-upstream.
+    - check, cut and prepare refuse releases that go backwards or change
+      upstream without restarting the revision at 1.
+    - status --json and --github-output add version_policy, upstream_version
+      and packaging_revision for debian-upstream repositories.
+    - Not combinable with [npm], [homebrew], debian.revision or
+      package_json/pyproject targets.
+  * Debian version comparison moved to vlrelease.debversion (apt_index
+    re-exports it).
+
+ -- Valkyrian Labs <maintainers@valkyrianlabs.com>  Sat, 10 Oct 2026 21:02:46 +0000
+
 vl-release (0.4.0-1) unstable; urgency=medium
 
   * cut: refuse to tag or push a release commit that is more than the version
