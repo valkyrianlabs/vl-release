@@ -39,6 +39,7 @@ canonical = "VERSION"
 |---|---|
 | `canonical` | The source of truth: a path (plain version file) or a target table |
 | `targets` | Every other file carrying the version |
+| `policy` | `"semver"` (default) or `"debian-upstream"`: what a version looks like (below) |
 
 Target tables: `{ kind = "...", path = "...", pattern = "..." }`
 
@@ -53,6 +54,51 @@ Target tables: `{ kind = "...", path = "...", pattern = "..." }`
 
 `debian/changelog` is deliberately **not** a version target: it is published history, extended
 only by `vlr prepare`.
+
+### Version policies
+
+**`semver`** (the default; every repository without a `policy` key): `MAJOR.MINOR.PATCH`.
+`vlr version bump` / `vlr cut` take `patch|minor|major`; the Debian package version is
+`VERSION-<debian.revision>` (e.g. `1.4.0-1`).
+
+**`debian-upstream`**: for repositories that package someone else's software and need two
+independent numbers, the upstream release and their own packaging revision.
+
+```toml
+[version]
+canonical = "VERSION"     # contains e.g. 8.0.2-1
+policy = "debian-upstream"
+```
+
+- The version is `UPSTREAM-REVISION`: `8.0.2-1` is upstream 8.0.2, first packaging revision. It
+  is used unchanged everywhere: tag `v8.0.2-1`, release notes entry `8.0.2-1`, GitHub release
+  title, and the Debian package version `8.0.2-1` (no extra `-1`).
+- Ordering is Debian's (`dpkg --compare-versions`), never SemVer precedence, under which
+  `8.0.2-1` would be a *prerelease* of 8.0.2: `8.0.2-1 < 8.0.2-2 < 8.0.2-10 < 8.0.3-1`.
+- Advancing it is always explicit:
+
+  | Change | Command | Example |
+  |---|---|---|
+  | packaging only | `vlr version bump revision`, `vlr cut revision` | `8.0.2-1` → `8.0.2-2` |
+  | new upstream release | `vlr version upstream 8.0.3` (revision restarts at 1), then `vlr cut 8.0.3-1` | `8.0.2-2` → `8.0.3-1` |
+  | explicit | `vlr version set 8.0.3-1`, `vlr cut 8.0.3-1` | |
+
+  `patch|minor|major` are refused as ambiguous (upstream patch or packaging change?).
+- Releases must move forward, and a release that changes the upstream version must restart the
+  revision at 1: after `8.0.2-3`, `8.0.3-2` is refused (`vlr check`, `vlr cut`, `vlr prepare`).
+  A skipped revision (`8.0.2-1` → `8.0.2-3`) is allowed.
+- `prepare --allow-empty-patch` applies to packaging revisions of an already released upstream
+  version.
+- Syntax: upstream = alphanumeric components separated by `.` or `+`, starting with a digit, no
+  leading zeros; revision = integer ≥ 1. No epochs and no `~` (neither is valid in a Git tag).
+- Not combinable with `[npm]` or `[homebrew]` (npm reads `8.0.2-1` as a prerelease; Homebrew has
+  its own revision) nor with `package_json`/`pyproject`/`homebrew` targets; `debian.revision` and
+  `prepare --debian-revision` do not apply (the revision is part of the version).
+- `vlr status --json` / `--github-output` add `version_policy`, `upstream_version` and
+  `packaging_revision`.
+
+Repositories that set `policy` should also require a vl-release that knows it:
+`[tool] requires = ">=0.5,<1"`.
 
 ## `[release]`
 

@@ -21,7 +21,7 @@ from vlrelease.config import Config
 from vlrelease.errors import ReleaseError
 from vlrelease.fsutil import read_text_or_empty
 from vlrelease.gitutil import dirty_tracked_paths, git_out, rev, run_git
-from vlrelease.semver import Version, resolve_target
+from vlrelease.policy import ReleaseVersion
 from vlrelease.state import read_release_state
 from vlrelease.targets import TargetError, replace_version_text
 from vlrelease.versioning import apply_version, require_consistent_version
@@ -56,7 +56,7 @@ def _require_staged_docs(config: Config) -> None:
         )
 
 
-def _version_only_problems(config: Config, base: str, target: str | None, version: Version) -> list[str]:
+def _version_only_problems(config: Config, base: str, target: str | None, version: ReleaseVersion) -> list[str]:
     """What, besides `vlr version`'s own substitution to `version`, changes from `base` to `target` (None: the index).
 
     Exact, not a line heuristic: each version file must be byte-identical to the base content with the version
@@ -97,7 +97,9 @@ def _version_only_problems(config: Config, base: str, target: str | None, versio
     return problems
 
 
-def _require_version_only(config: Config, base: str, target: str | None, version: Version, tag: str, hint: str) -> None:
+def _require_version_only(
+    config: Config, base: str, target: str | None, version: ReleaseVersion, tag: str, hint: str
+) -> None:
     problems = _version_only_problems(config, base, target, version)
     if problems:
         what = f"the release commit {target[:12]}" if target else "the staged release commit"
@@ -144,10 +146,11 @@ def cut_release(
         for v in {str(current)}
     }
     head_release = resumable.get(subject) if head != remote_head else None
-    if target in ("major", "minor", "patch") and head_release:
+    policy = config.policy
+    if target in policy.bump_parts and head_release:
         raise ReleaseError(f"HEAD is an unpushed release commit for {head_release}; resume with `vlr cut {head_release}`.")
     try:
-        version = resolve_target(current, target)
+        version = policy.resolve(current, target)
     except ValueError as exc:
         raise ReleaseError(str(exc)) from exc
     tag = config.tag_for(version)
@@ -189,6 +192,8 @@ def cut_release(
         state = read_release_state(config)
         if state.last_recorded is not None and version <= state.last_recorded:
             raise ReleaseError(f"Target {version} is not newer than the last recorded release {state.last_recorded}.")
+        if state.last_recorded is not None and (problem := policy.transition_problem(state.last_recorded, version)):
+            raise ReleaseError(f"Refusing to cut {tag}: {problem}.")
         # version == current is allowed: it was never tagged (checked above) nor recorded, so
         # releasing it just tags HEAD (e.g. the first release of a freshly set-up repository).
         _require_staged_docs(config)

@@ -114,7 +114,7 @@ def prepare_release(
     if state.phase == "unbumped":
         raise ReleaseError(
             f"{version} is already recorded in the release history, but new release docs are staged. "
-            "Bump the version first (`vlr version bump patch|minor|major`)."
+            f"Bump the version first ({config.policy.bump_hint})."
         )
     if state.phase == "prepared":
         entry = state.notes_top
@@ -142,9 +142,10 @@ def prepare_release(
                 f"Refusing to prepare {version}: staged release documentation is empty ({', '.join(missing)}). "
                 "Write the release docs, or pass --allow-empty-patch for a deliberate empty patch release."
             )
-        if last is None or not state.version.is_patch_successor_of(last):
+        if last is None or not config.policy.is_maintenance_successor(last, state.version):
+            kind = "patch releases" if config.policy.name == "semver" else "packaging revisions of an already-released upstream version"
             raise ReleaseError(
-                f"--allow-empty-patch only applies to patch releases of an already-released line; "
+                f"--allow-empty-patch only applies to {kind} of an already-released line; "
                 f"{version} after {last or 'no previous release'} is not one. Write the release docs."
             )
         staged_notes = staged_notes or staging.StagedNotes(title=MAINTENANCE_TITLE, body=MAINTENANCE_BODY)
@@ -166,10 +167,15 @@ def prepare_release(
     debian_version = None
     if config.debian is not None:
         assert staged_changelog is not None
+        if debian_revision is not None and config.policy.name != "semver":
+            raise ReleaseError(
+                f"--debian-revision does not apply with version.policy = {config.policy.name!r}: the packaging revision "
+                f"is part of the version ({version}); bump it with `vlr version bump revision`"
+            )
         revision = debian_revision if debian_revision is not None else config.debian.revision
         if revision < 1:
             raise ReleaseError("--debian-revision must be >= 1")
-        debian_version = f"{version}-{revision}"
+        debian_version = config.policy.debian_version(state.version, revision)
         distribution = os.environ.get("RELEASE_DEBIAN_DISTRIBUTION", "").strip() or config.debian.distribution
         urgency = os.environ.get("RELEASE_DEBIAN_URGENCY", "").strip() or config.debian.urgency
         stanza = debchangelog.render_stanza(

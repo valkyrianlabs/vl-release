@@ -22,7 +22,7 @@ from vlrelease import debchangelog, notes, staging
 from vlrelease.config import Config
 from vlrelease.fsutil import read_text_or_empty
 from vlrelease.gitutil import head_commit_timestamp
-from vlrelease.semver import Version
+from vlrelease.policy import DEFAULT_POLICY, ReleaseVersion, VersionPolicy, get_policy
 from vlrelease.versioning import read_state
 
 PHASES = ("pending", "prepared", "unbumped", "missing-docs", "inconsistent", "invalid")
@@ -31,7 +31,7 @@ RELEASABLE_PHASES = ("pending", "prepared")
 
 @dataclass
 class ReleaseState:
-    version: Version | None
+    version: ReleaseVersion | None
     tag: str | None
     phase: str
     notes_top: notes.NotesEntry | None = None
@@ -42,22 +42,29 @@ class ReleaseState:
     changelog_staged: bool | None = None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    policy: VersionPolicy = field(default_factory=lambda: get_policy(DEFAULT_POLICY), repr=False)
 
     @property
-    def last_recorded(self) -> Version | None:
-        candidates: list[Version] = []
+    def last_recorded(self) -> ReleaseVersion | None:
+        candidates: list[ReleaseVersion] = []
         if self.notes_top is not None:
             try:
-                candidates.append(Version.parse(self.notes_top.version))
+                candidates.append(self.policy.parse(self.notes_top.version))
             except ValueError:
                 pass
-        if self.debian_top is not None and (upstream := self.debian_top.upstream_version()) is not None:
-            candidates.append(upstream)
+        if self.debian_top is not None and (recorded := self.policy.recorded_version(self.debian_top)) is not None:
+            candidates.append(recorded)
         return max(candidates) if candidates else None
 
     def as_dict(self) -> dict:
+        extra: dict = {}
+        if self.policy.name != DEFAULT_POLICY:  # semver output stays exactly as before
+            extra["version_policy"] = self.policy.name
+            if self.version is not None:
+                extra.update(self.policy.describe(self.version))
         return {
             "version": str(self.version) if self.version else None,
+            **extra,
             "tag": self.tag,
             "phase": self.phase,
             "last_recorded": str(self.last_recorded) if self.last_recorded else None,
@@ -76,7 +83,9 @@ class ReleaseState:
 def read_release_state(config: Config) -> ReleaseState:
     versions = read_state(config)
     version = versions.canonical
-    state = ReleaseState(version=version, tag=config.tag_for(version) if version else None, phase="invalid")
+    state = ReleaseState(
+        version=version, tag=config.tag_for(version) if version else None, phase="invalid", policy=config.policy
+    )
     state.errors.extend(versions.issues)
 
     notes_text = read_text_or_empty(config.resolve(config.release.notes))
@@ -124,7 +133,7 @@ def read_release_state(config: Config) -> ReleaseState:
 
     debian = config.debian is not None
     notes_has = state.notes_top is not None and state.notes_top.version == str(version)
-    deb_has = state.debian_top is not None and state.debian_top.upstream == str(version)
+    deb_has = state.debian_top is not None and config.policy.records(state.debian_top, version)
     if debian and notes_has != deb_has:
         state.phase = "inconsistent"
         state.errors.append(
@@ -141,7 +150,7 @@ def read_release_state(config: Config) -> ReleaseState:
             state.phase = "unbumped"
             state.warnings.append(
                 f"{version} is already released/prepared but new release docs are staged; "
-                "bump the version (`vlr version bump patch|minor|major`) before releasing"
+                f"bump the version ({config.policy.bump_hint}) before releasing"
             )
         else:
             state.phase = "prepared"
@@ -151,6 +160,10 @@ def read_release_state(config: Config) -> ReleaseState:
     if last is not None and version <= last:
         state.phase = "inconsistent"
         state.errors.append(f"version {version} is not newer than the last recorded release {last}")
+        return state
+    if last is not None and (problem := config.policy.transition_problem(last, version)):
+        state.phase = "inconsistent"
+        state.errors.append(problem)
         return state
     if staged_complete:
         state.phase = "pending"

@@ -20,6 +20,7 @@ from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from vlrelease import __version__
+from vlrelease.debversion import compare_debian_versions  # noqa: F401 (re-exported: dpkg ordering lives there)
 
 HttpGet = Callable[[str, Mapping[str, str]], bytes]
 
@@ -216,67 +217,3 @@ def _auth_headers(config: AptIndexConfig) -> dict[str, str]:
 
 def _strip_epoch(version: str) -> str:
     return version.split(":", 1)[1] if ":" in version else version
-
-
-# --- dpkg version ordering (deb-version(7)) ---------------------------------------------------
-
-
-def compare_debian_versions(left: str, right: str) -> int:
-    """Return <0, 0, >0 like `dpkg --compare-versions` (epoch, upstream, revision; `~` sorts first)."""
-    l_epoch, l_upstream, l_revision = _split_debian_version(left)
-    r_epoch, r_upstream, r_revision = _split_debian_version(right)
-    if l_epoch != r_epoch:
-        return -1 if l_epoch < r_epoch else 1
-    result = _compare_fragment(l_upstream, r_upstream)
-    if result:
-        return result
-    return _compare_fragment(l_revision, r_revision)
-
-
-def _split_debian_version(version: str) -> tuple[int, str, str]:
-    raw = version.strip()
-    epoch = 0
-    if ":" in raw:
-        epoch_raw, raw = raw.split(":", 1)
-        epoch = int(epoch_raw) if epoch_raw.isdigit() else 0
-    revision = "0"
-    if "-" in raw:
-        raw, revision = raw.rsplit("-", 1)
-    return epoch, raw, revision
-
-
-def _char_order(char: str) -> int:
-    if char == "~":
-        return -1
-    if char.isalpha():
-        return ord(char)
-    return ord(char) + 256
-
-
-def _compare_fragment(left: str, right: str) -> int:
-    i = j = 0
-    while i < len(left) or j < len(right):
-        first_diff = 0
-        while (i < len(left) and not left[i].isdigit()) or (j < len(right) and not right[j].isdigit()):
-            lc = _char_order(left[i]) if i < len(left) and not left[i].isdigit() else 0
-            rc = _char_order(right[j]) if j < len(right) and not right[j].isdigit() else 0
-            if lc != rc:
-                return -1 if lc < rc else 1
-            i += 1
-            j += 1
-        while i < len(left) and left[i] == "0":
-            i += 1
-        while j < len(right) and right[j] == "0":
-            j += 1
-        while i < len(left) and left[i].isdigit() and j < len(right) and right[j].isdigit():
-            if not first_diff:
-                first_diff = ord(left[i]) - ord(right[j])
-            i += 1
-            j += 1
-        if i < len(left) and left[i].isdigit():
-            return 1
-        if j < len(right) and right[j].isdigit():
-            return -1
-        if first_diff:
-            return -1 if first_diff < 0 else 1
-    return 0

@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 from vlrelease.config import TargetSpec
-from vlrelease.semver import Version
+from vlrelease.policy import DEFAULT_POLICY, ReleaseVersion, VersionPolicy, get_policy
 
 HOMEBREW_PLACEHOLDER_SHA256 = "TODO_REPLACE_WITH_RELEASE_ARCHIVE_SHA256"
 
@@ -86,7 +86,7 @@ def read_version_text(spec: TargetSpec, text: str) -> str:
     raise TargetError(f"unsupported target kind {spec.kind!r}")
 
 
-def replace_version_text(spec: TargetSpec, text: str, version: Version) -> str:
+def replace_version_text(spec: TargetSpec, text: str, version: ReleaseVersion) -> str:
     new = str(version)
     if spec.kind == "file":
         return f"{new}\n"
@@ -120,7 +120,7 @@ def replace_version_text(spec: TargetSpec, text: str, version: Version) -> str:
     raise TargetError(f"unsupported target kind {spec.kind!r}")
 
 
-def replace_homebrew_version(text: str, version: Version) -> str:
+def replace_homebrew_version(text: str, version: ReleaseVersion) -> str:
     """Point a formula at another version; the sha256 becomes a placeholder until release rendering."""
     current = read_version_text(TargetSpec(kind="homebrew", path="<formula>"), text)
     if current == str(version):
@@ -146,12 +146,13 @@ def _pyproject_project_span(text: str) -> tuple[int, int]:
     return section.end(), following.start() if following else len(text)
 
 
-def read_target(root: Path, spec: TargetSpec) -> Version:
+def read_target(root: Path, spec: TargetSpec, policy: VersionPolicy | None = None) -> ReleaseVersion:
+    """The version a target declares, parsed by the repository's version policy (default semver)."""
     path = root / spec.path
     if not path.is_file():
         raise TargetError(f"{spec.path} does not exist")
     raw = read_version_text(spec, path.read_text(encoding="utf-8"))
     try:
-        return Version.parse(raw)
+        return (policy or get_policy(DEFAULT_POLICY)).parse(raw)
     except ValueError as exc:
         raise TargetError(str(exc)) from exc

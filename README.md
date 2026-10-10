@@ -47,6 +47,15 @@ debian/changelog                 published Debian history (written by vlr prepar
 `.release/` is tracked. `_NEXT` files are the mutable state of unreleased work; the history
 files are the record of what was published. Agents edit the former, never the latter.
 
+### Versions
+
+SemVer (`MAJOR.MINOR.PATCH`) is the default and needs no configuration. Repositories that
+package someone else's software can opt into `[version] policy = "debian-upstream"`: the
+version is then `UPSTREAM-REVISION` (`8.0.2-1`, `8.0.2-2`, `8.0.3-1`), ordered like Debian
+versions and used unchanged as tag, release-notes entry and Debian package version, with
+`vlr version bump revision` for packaging-only changes and `vlr version upstream X.Y.Z` to adopt
+a new upstream release. Details: `vlr help config`.
+
 Adopting vl-release in a repository:
 
 1. `vlr install-skill` installs the generic agent skill (`.claude/skills/vl-release/SKILL.md`, plus
@@ -91,6 +100,7 @@ HTML comments are ignored, so the reset templates are pure guidance. Placeholder
 | `vlr check [--release] [--tag T] [--json]` | Validate config, versions, staged docs, history; `--release` is the strict CI gate |
 | `vlr status [--json] [--github-output]` | Version, tag, release phase, staged state, release title |
 | `vlr version show\|check\|sync\|set X.Y.Z\|bump patch\|minor\|major` | Version consistency across all configured targets |
+| `vlr version bump revision` / `vlr version upstream X.Y.Z` | `debian-upstream` policy: packaging-only revision / adopt a new upstream release (revision 1) |
 | `vlr prepare [--dry-run] [--record FILE] [--allow-empty-patch]` | Promote staged docs into the history (work tree only) |
 | `vlr release-title [--staged] [--json]` / `vlr release-body [--staged] [--output F]` | GitHub release title/body from the prepared entry |
 | `vlr build-deb` | Build `.deb`s from the prepared work tree inside `build/deb/` (never the parent directory) |
@@ -104,7 +114,7 @@ HTML comments are ignored, so the reset templates are pure guidance. Placeholder
 | `vlr publish-npm [--dry-run] [--registry NAME] [--require-enabled]` | Idempotent, integrity-checked publication to every `[[publish.npm]]` registry + verification |
 | `vlr verify-npm [--registry NAME] [--timeout S]` | Wait until the registries list the built tarball by integrity |
 | `vlr github-release` | Create/update the GitHub release and upload assets (idempotent) |
-| `vlr cut patch\|minor\|major\|X.Y.Z [--push]` | Bump, commit, annotated tag, atomic push (resumable; the release commit must be a pure version bump) |
+| `vlr cut patch\|minor\|major\|revision\|VERSION [--push]` | Bump, commit, annotated tag, atomic push (resumable; the release commit must be a pure version bump) |
 | `vlr finalize [--record FILE]` | After publication: commit the promoted history + cleared `_NEXT` to the branch |
 | `vlr install-skill` / `vlr install-local-skill` | Generic agent skill / this repository's `PROJECT.md` |
 | `vlr help config\|staging\|ci` | Offline references |

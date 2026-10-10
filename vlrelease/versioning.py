@@ -12,14 +12,14 @@ from pathlib import Path
 from vlrelease.config import Config, TargetSpec
 from vlrelease.errors import ReleaseError
 from vlrelease.fsutil import atomic_write_text
-from vlrelease.semver import Version, resolve_target
+from vlrelease.policy import DebianUpstreamPolicy, ReleaseVersion
 from vlrelease.targets import TargetError, read_target, replace_version_text
 
 
 @dataclass(frozen=True)
 class TargetReading:
     spec: TargetSpec
-    version: Version | None
+    version: ReleaseVersion | None
     error: str | None = None
 
     def as_dict(self) -> dict:
@@ -33,7 +33,7 @@ class TargetReading:
 
 @dataclass(frozen=True)
 class VersionState:
-    canonical: Version | None
+    canonical: ReleaseVersion | None
     readings: tuple[TargetReading, ...]
     issues: tuple[str, ...] = field(default_factory=tuple)
 
@@ -47,7 +47,7 @@ def read_state(config: Config) -> VersionState:
     issues: list[str] = []
     for spec in config.version.all_targets:
         try:
-            readings.append(TargetReading(spec, read_target(config.root, spec)))
+            readings.append(TargetReading(spec, read_target(config.root, spec, config.policy)))
         except TargetError as exc:
             readings.append(TargetReading(spec, None, str(exc)))
             issues.append(f"{spec.describe()}: {exc}")
@@ -62,7 +62,7 @@ def read_state(config: Config) -> VersionState:
     return VersionState(canonical=canonical, readings=tuple(readings), issues=tuple(issues))
 
 
-def require_consistent_version(config: Config) -> Version:
+def require_consistent_version(config: Config) -> ReleaseVersion:
     state = read_state(config)
     if not state.ok or state.canonical is None:
         rendered = "\n".join(f"  - {issue}" for issue in state.issues) or "  - canonical version unreadable"
@@ -71,7 +71,7 @@ def require_consistent_version(config: Config) -> Version:
 
 
 def plan_version_update(
-    config: Config, version: Version, *, include_canonical: bool = True
+    config: Config, version: ReleaseVersion, *, include_canonical: bool = True
 ) -> list[tuple[Path, str]]:
     """Return [(path, new_content)] for every target whose content would change."""
     planned: list[tuple[Path, str]] = []
@@ -90,7 +90,7 @@ def plan_version_update(
     return planned
 
 
-def apply_version(config: Config, version: Version, *, dry_run: bool = False, include_canonical: bool = True) -> list[str]:
+def apply_version(config: Config, version: ReleaseVersion, *, dry_run: bool = False, include_canonical: bool = True) -> list[str]:
     planned = plan_version_update(config, version, include_canonical=include_canonical)
     if not dry_run:
         for path, content in planned:
@@ -98,7 +98,7 @@ def apply_version(config: Config, version: Version, *, dry_run: bool = False, in
     return [str(path.relative_to(config.root)) for path, _ in planned]
 
 
-def sync_versions(config: Config, *, dry_run: bool = False) -> tuple[Version, list[str]]:
+def sync_versions(config: Config, *, dry_run: bool = False) -> tuple[ReleaseVersion, list[str]]:
     state = read_state(config)
     if state.canonical is None:
         raise ReleaseError(
@@ -108,15 +108,41 @@ def sync_versions(config: Config, *, dry_run: bool = False) -> tuple[Version, li
     return state.canonical, apply_version(config, state.canonical, dry_run=dry_run, include_canonical=False)
 
 
-def set_version(config: Config, target: str, *, dry_run: bool = False) -> tuple[Version, Version | None, list[str]]:
-    """Set every target to `target` (`patch|minor|major` relative to the current version, or X.Y.Z)."""
+def set_version(
+    config: Config, target: str, *, dry_run: bool = False
+) -> tuple[ReleaseVersion, ReleaseVersion | None, list[str]]:
+    """Set every target to `target`: a bump part of the repository's version policy (semver:
+    `patch|minor|major`; debian-upstream: `revision`) relative to the current version, or an
+    explicit version in the policy's syntax."""
     state = read_state(config)
-    if target in ("major", "minor", "patch"):
+    policy = config.policy
+    if target in policy.bump_parts:
         if not state.ok or state.canonical is None:
             rendered = "; ".join(state.issues)
-            raise ReleaseError(f"Cannot bump from an inconsistent state ({rendered}). Use `vlr version set X.Y.Z`.")
+            raise ReleaseError(
+                f"Cannot bump from an inconsistent state ({rendered}). Use `vlr version set {policy.example}`."
+            )
     try:
-        new = resolve_target(state.canonical or Version(0, 0, 0), target)
+        new = policy.resolve(state.canonical, target)
+    except ValueError as exc:
+        raise ReleaseError(str(exc)) from exc
+    return new, state.canonical, apply_version(config, new, dry_run=dry_run)
+
+
+def adopt_upstream(
+    config: Config, upstream: str, *, dry_run: bool = False
+) -> tuple[ReleaseVersion, ReleaseVersion | None, list[str]]:
+    """debian-upstream policy: move to a newer upstream release with packaging revision 1."""
+    policy = config.policy
+    if not isinstance(policy, DebianUpstreamPolicy):
+        raise ReleaseError(
+            f"`vlr version upstream` needs version.policy = \"debian-upstream\"; this repository uses {policy.name}"
+        )
+    state = read_state(config)
+    if not state.ok or state.canonical is None:
+        raise ReleaseError("Cannot adopt an upstream release from an inconsistent state: " + "; ".join(state.issues))
+    try:
+        new = policy.adopt_upstream(state.canonical, upstream)
     except ValueError as exc:
         raise ReleaseError(str(exc)) from exc
     return new, state.canonical, apply_version(config, new, dry_run=dry_run)

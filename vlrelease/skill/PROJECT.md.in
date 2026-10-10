@@ -15,7 +15,7 @@ $debian_history_row
 
 - Canonical: `$canonical`
 - Kept in sync by `vlr version …`: $targets
-- Tags: `$tag_example` on branch `$branch`; GitHub release title: `$title_example`
+- Tags: `$tag_example` on branch `$branch`; GitHub release title: `$title_example`$policy_rows
 
 ## Release channels
 

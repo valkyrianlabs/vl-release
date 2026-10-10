@@ -13,6 +13,7 @@ from vlrelease import __version__
 from vlrelease.config import Config, discover_root, load_config
 from vlrelease.errors import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, ReleaseError
 from vlrelease.gitutil import local_tag_exists
+from vlrelease.policy import ALL_BUMP_PARTS
 
 
 def _prog() -> str:
@@ -161,6 +162,8 @@ def cmd_status(args: argparse.Namespace) -> int:
                 "homebrew": payload["channels"]["homebrew"],
                 "npm": payload["channels"]["npm"],
                 "npm_registries": ",".join(payload["channels"]["npm_registries"]),
+                # Only under a non-default version policy (semver output is unchanged).
+                **{key: payload[key] for key in ("version_policy", "upstream_version", "packaging_revision") if key in payload},
             }
         )
     if args.json:
@@ -168,6 +171,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print(f"project:   {config.project.name} ({config.project.package})")
         print(f"version:   {payload['version']}  tag: {payload['tag']} ({'exists' if payload['tag_exists_locally'] else 'not tagged'} locally)")
+        if "version_policy" in payload:
+            parts = f" (upstream {payload['upstream_version']}, packaging revision {payload['packaging_revision']})" \
+                if "upstream_version" in payload else ""
+            print(f"policy:    {payload['version_policy']}{parts}")
         print(f"phase:     {payload['phase']}")
         print(f"last:      {payload['last_recorded'] or 'no release recorded yet'}")
         staged = payload["staged"]
@@ -215,8 +222,15 @@ def cmd_version(args: argparse.Namespace) -> int:
     if action == "sync":
         version, changed = versioning.sync_versions(config, dry_run=args.dry_run)
         new, old = version, version
+    elif action == "upstream":
+        new, old, changed = versioning.adopt_upstream(config, args.upstream, dry_run=args.dry_run)
     else:
         target = args.target if action == "set" else args.part
+        if action == "bump" and target not in config.policy.bump_parts:
+            raise ReleaseError(
+                f"`vlr version bump {target}` does not apply to version.policy = {config.policy.name!r}; "
+                f"use {config.policy.bump_hint}"
+            )
         new, old, changed = versioning.set_version(config, target, dry_run=args.dry_run)
     if args.json:
         _print_json({"version": str(new), "previous": str(old) if old else None, "changed": changed, "dry_run": args.dry_run})
@@ -619,11 +633,17 @@ def build_parser() -> argparse.ArgumentParser:
     vp.add_argument("--dry-run", action="store_true")
     vp.add_argument("--json", action="store_true")
     vp = vsub.add_parser("set", help="set an explicit version everywhere")
-    vp.add_argument("target", metavar="X.Y.Z")
+    vp.add_argument("target", metavar="VERSION", help="X.Y.Z (semver) or UPSTREAM-REVISION (debian-upstream)")
     vp.add_argument("--dry-run", action="store_true")
     vp.add_argument("--json", action="store_true")
-    vp = vsub.add_parser("bump", help="bump patch|minor|major everywhere")
-    vp.add_argument("part", choices=("patch", "minor", "major"))
+    vp = vsub.add_parser("bump", help="bump patch|minor|major (semver) or revision (debian-upstream) everywhere")
+    vp.add_argument("part", choices=ALL_BUMP_PARTS)
+    vp.add_argument("--dry-run", action="store_true")
+    vp.add_argument("--json", action="store_true")
+    vp = vsub.add_parser(
+        "upstream", help="debian-upstream policy: adopt a newer upstream version, packaging revision 1 (X.Y.Z -> X.Y.Z-1)"
+    )
+    vp.add_argument("upstream", metavar="UPSTREAM")
     vp.add_argument("--dry-run", action="store_true")
     vp.add_argument("--json", action="store_true")
 
@@ -691,7 +711,8 @@ def build_parser() -> argparse.ArgumentParser:
     hp.add_argument("--json", action="store_true")
 
     p = add("cut", cmd_cut, "bump, commit and tag a release (push with --push); resumable")
-    p.add_argument("target", metavar="patch|minor|major|X.Y.Z")
+    p.add_argument("target", metavar="patch|minor|major|revision|VERSION",
+                   help="a bump of the repository's version policy, or an explicit version")
     p.add_argument("--push", action="store_true")
     p.add_argument("--skip-tests", action="store_true")
     p.add_argument("--no-fetch", action="store_true")

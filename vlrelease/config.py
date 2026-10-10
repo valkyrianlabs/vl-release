@@ -16,6 +16,7 @@ from typing import Any
 from vlrelease import __version__
 from vlrelease.errors import ConfigError
 from vlrelease.gitutil import find_repo_root
+from vlrelease.policy import DEFAULT_POLICY, POLICIES, VersionPolicy, get_policy
 from vlrelease.semver import Version, satisfies
 
 CONFIG_FILENAME = "release.toml"
@@ -57,6 +58,7 @@ class ProjectConfig:
 class VersionConfig:
     canonical: TargetSpec
     targets: tuple[TargetSpec, ...] = ()
+    policy: str = DEFAULT_POLICY
 
     @property
     def all_targets(self) -> tuple[TargetSpec, ...]:
@@ -199,8 +201,13 @@ class Config:
     def resolve(self, relative: str) -> Path:
         return self.root / relative
 
-    def tag_for(self, version: Version | str) -> str:
+    def tag_for(self, version: object) -> str:
         return self.release.tag.format(version=version)
+
+    @property
+    def policy(self) -> VersionPolicy:
+        """How versions are spelled, ordered and advanced (`[version] policy`, vlrelease.policy)."""
+        return get_policy(self.version.policy)
 
     @property
     def output_dir(self) -> Path:
@@ -428,7 +435,17 @@ def parse_config(data: dict[str, Any], *, root: Path, path: Path) -> Config:
     if not isinstance(targets_raw, list):
         raise ConfigError("version.targets must be a list")
     targets = tuple(_parse_target(item, f"version.targets[{index}]") for index, item in enumerate(targets_raw))
+    policy_name = version_table.string("policy", DEFAULT_POLICY) or DEFAULT_POLICY
     version_table.finish()
+    if policy_name not in POLICIES:
+        raise ConfigError(f"version.policy {policy_name!r} is unknown; available: {', '.join(POLICIES)}")
+    policy = get_policy(policy_name)
+    for spec in (canonical, *targets):
+        if spec.kind not in policy.target_kinds:
+            raise ConfigError(
+                f"version target {spec.describe()}: kind {spec.kind!r} cannot carry {policy.name} versions "
+                f"(e.g. {policy.example}); allowed kinds: {', '.join(sorted(policy.target_kinds))}"
+            )
     seen_paths: set[str] = set()
     for spec in (canonical, *targets):
         if spec.path in seen_paths and spec.kind != "regex":
@@ -476,6 +493,19 @@ def parse_config(data: dict[str, Any], *, root: Path, path: Path) -> Config:
     npm = _parse_npm(top.table("npm"))
     top.finish()
 
+    if policy.name != DEFAULT_POLICY:
+        # npm and Homebrew have their own version semantics (`8.0.2-1` is an npm prerelease; Homebrew
+        # has a separate revision); the packaging revision belongs in the version itself.
+        for enabled, section in ((npm is not None, "[npm]"), (homebrew is not None, "[homebrew]")):
+            if enabled:
+                raise ConfigError(f"{section} is not supported with version.policy = {policy.name!r}")
+        debian_raw = data.get("debian")
+        if isinstance(debian_raw, dict) and "revision" in debian_raw:
+            raise ConfigError(
+                f"debian.revision does not apply with version.policy = {policy.name!r}: the packaging revision is part "
+                f"of the version (e.g. {policy.example}); remove it"
+            )
+
     if npm_registries and npm is None:
         raise ConfigError("[[publish.npm]] requires [npm] (it publishes the tarball that `vlr build-npm` builds)")
 
@@ -497,7 +527,7 @@ def parse_config(data: dict[str, Any], *, root: Path, path: Path) -> Config:
         schema_version=schema_version,
         tool_requires=tool_requires,
         project=project,
-        version=VersionConfig(canonical=canonical, targets=targets),
+        version=VersionConfig(canonical=canonical, targets=targets, policy=policy_name),
         release=release,
         debian=debian,
         source_archive=source_archive,

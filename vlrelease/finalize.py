@@ -157,7 +157,7 @@ def finalize_release(
                 deb_path = worktree / config.debian.changelog
                 branch_deb = read_text_or_empty(deb_path)
                 top = debchangelog.parse_top_entry(branch_deb, source=config.debian.changelog)
-                if top is None or top.upstream != version:
+                if top is None or not config.policy.records(top, state.version):
                     write(config.debian.changelog, debchangelog.prepend_stanza(branch_deb, stanza))
             for relative, template in staging_files:
                 write(

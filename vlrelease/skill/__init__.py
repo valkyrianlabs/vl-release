@@ -155,8 +155,20 @@ def render_local_skill(config: Config) -> str:
     checks = ["vlr check"]
     if config.release.test_command:
         checks.append(" ".join(config.release.test_command))
-    version_example = "X.Y.Z"
+    policy = config.policy
+    version_example = "X.Y.Z" if policy.name == "semver" else policy.example
+    policy_rows = ""  # semver repositories render exactly as before
+    if policy.name == "debian-upstream":
+        policy_rows = (
+            "\n- Version policy `debian-upstream`: the version is `UPSTREAM-REVISION` (e.g. `8.0.2-1`), ordered like "
+            "Debian versions; it is also the Debian package version.\n"
+            "  - packaging-only change: `vlr version bump revision` / `vlr cut revision` (`8.0.2-1` -> `8.0.2-2`)\n"
+            "  - new upstream release: `vlr version upstream X.Y.Z` (revision restarts at 1), then "
+            "`vlr cut X.Y.Z-1`\n"
+            "  - never `patch|minor|major` (refused as ambiguous)"
+        )
     return _template("PROJECT.md.in").substitute(
+        policy_rows=policy_rows,
         project_name=config.project.name,
         staged_rows=staged_rows,
         notes=config.release.notes,
