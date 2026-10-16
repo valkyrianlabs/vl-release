@@ -80,6 +80,23 @@ def deb_control_field(path: Path, field: str) -> str | None:
     return value if completed.returncode == 0 and value else None
 
 
+# The Valkyrian Labs repository's keyring package. A release .deb must install on its own (as a
+# GitHub release asset, and in the clean-install smoke test's stock container), where the repository,
+# and so this package, is absent. It may Recommend the keyring, which APT installs by default from
+# the repository, but never Depend on it.
+ARCHIVE_KEYRING = "valkyrianlabs-archive-keyring"
+
+
+def relation_packages(value: str) -> set[str]:
+    """Package names in a Depends-style field: `a (>= 1), b:any | c [amd64]` -> {a, b, c}."""
+    names: set[str] = set()
+    for part in re.split(r"[,|]", value):
+        words = part.split()
+        if words:
+            names.add(words[0].split(":")[0])
+    return names
+
+
 def check_package_contract(
     config: Config, contract: DebianPackageContract, identity: DebIdentity, contents: DebContents, debian_version: str
 ) -> list[str]:
@@ -93,6 +110,13 @@ def check_package_contract(
         actual = deb_control_field(identity.path, field)
         if actual != expected:
             issues.append(f"{name}: control field {field}={actual!r} does not match the file name ({expected})")
+    for field in ("Pre-Depends", "Depends"):
+        if ARCHIVE_KEYRING in relation_packages(deb_control_field(identity.path, field) or ""):
+            issues.append(
+                f"{name}: {field} on {ARCHIVE_KEYRING}: the package would not install without the Valkyrian Labs "
+                f"repository (a GitHub release asset, the clean-install smoke test). Use Recommends: APT still "
+                f"installs the keyring by default from the repository"
+            )
     for pattern in contract.required_paths:
         if not contents.matches(pattern):
             issues.append(f"{name}: required path missing: {pattern}")

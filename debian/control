@@ -18,10 +18,10 @@ Depends:
  python3 (>= 3.12),
  ${misc:Depends},
  ${python3:Depends},
- valkyrianlabs-archive-keyring,
 Recommends:
  curl,
  dpkg-dev,
+ valkyrianlabs-archive-keyring,
 Suggests:
  gh,
 Description: deterministic release toolkit for Valkyrian Labs projects
