@@ -1,5 +1,19 @@
 # vl-release release notes
 
+<!-- vl-release:entry version=0.5.1 -->
+## 0.5.1 — The archive keyring is recommended, never required
+
+_Released 2026-10-16_
+
+- vl-release now **recommends** `valkyrianlabs-archive-keyring`, which keeps the repository's signing
+  key current through normal upgrades (it owns `/usr/share/keyrings/valkyrianlabs.gpg` and links an
+  unmodified `/etc/apt/keyrings/valkyrianlabs.gpg` to it). APT installs it by default when vl-release
+  comes from the repository, and the `.deb` from a GitHub release still installs on its own.
+- **`vlr validate-artifacts` refuses a `.deb` that Depends (or Pre-Depends) on
+  `valkyrianlabs-archive-keyring`.** Such a package fails to install anywhere the repository is not
+  configured, including the clean-install smoke test every release runs in a stock container. The
+  message says what to do: make it a Recommends.
+
 <!-- vl-release:entry version=0.5.0 -->
 ## 0.5.0 — Upstream versions with packaging revisions
 

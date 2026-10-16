@@ -1,3 +1,16 @@
+vl-release (0.5.1-1) unstable; urgency=medium
+
+  * Recommend valkyrianlabs-archive-keyring so renewed APT signing-key metadata
+    reaches existing installs through upgrades (it owns
+    /usr/share/keyrings/valkyrianlabs.gpg and links an unmodified
+    /etc/apt/keyrings/valkyrianlabs.gpg to it). Recommends, not Depends: the
+    release .deb must install without the repository.
+  * validate-artifacts: a .deb that Depends or Pre-Depends on
+    valkyrianlabs-archive-keyring is refused (it would not install from a
+    GitHub release or in a clean-install smoke test); use Recommends.
+
+ -- Valkyrian Labs <maintainers@valkyrianlabs.com>  Fri, 16 Oct 2026 21:50:51 +0000
+
 vl-release (0.5.0-1) unstable; urgency=medium
 
   * Add [version] policy: "semver" (default, unchanged) or "debian-upstream"
