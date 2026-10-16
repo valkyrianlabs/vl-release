@@ -148,6 +148,11 @@ One table per binary package. Every built `.deb` must have a contract and vice v
 Always checked: control `Package`/`Version` match the file name, the version is the prepared one,
 and `usr/share/doc/<pkg>/changelog.Debian.gz` starts with the prepared stanza.
 
+Also always checked: no `Depends` or `Pre-Depends` on `valkyrianlabs-archive-keyring`. A release
+`.deb` must install on its own (a GitHub release asset, the clean-install smoke test in a stock
+container), where the Valkyrian Labs repository is absent; `Recommends` gets the keyring installed by
+default whenever the package comes from the repository.
+
 ## `[source_archive]`
 
 | Key | Default | Meaning |

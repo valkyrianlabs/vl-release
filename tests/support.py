@@ -204,7 +204,9 @@ def requires_tools(*tools: str):
     return unittest.skipIf(bool(missing), f"requires {', '.join(missing)}")
 
 
-def build_fake_deb(directory: Path, *, package: str, version: str, files: dict[str, bytes], arch: str = "all") -> Path:
+def build_fake_deb(
+    directory: Path, *, package: str, version: str, files: dict[str, bytes], arch: str = "all", control: str = ""
+) -> Path:
     """Build a real .deb with dpkg-deb from an in-memory file map."""
     stage = directory / f"stage-{package}-{version}"
     if stage.exists():
@@ -212,7 +214,7 @@ def build_fake_deb(directory: Path, *, package: str, version: str, files: dict[s
     (stage / "DEBIAN").mkdir(parents=True)
     (stage / "DEBIAN" / "control").write_text(
         f"Package: {package}\nVersion: {version}\nArchitecture: {arch}\nMaintainer: T <t@example.com>\n"
-        "Description: test\n test package\n",
+        f"{control}Description: test\n test package\n",
         encoding="utf-8",
     )
     for relative, data in files.items():

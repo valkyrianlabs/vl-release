@@ -86,10 +86,12 @@ class DebianBuildTests(PreparedDebianRepo):
 
 @requires_tools("dpkg-deb")
 class ContractTests(PreparedDebianRepo):
-    def stage(self, root: Path, files: dict[str, bytes], *, version: str = "1.2.0-1", package: str = "demo") -> Path:
+    def stage(
+        self, root: Path, files: dict[str, bytes], *, version: str = "1.2.0-1", package: str = "demo", control: str = ""
+    ) -> Path:
         out = root / "release"
         out.mkdir(exist_ok=True)
-        deb = build_fake_deb(out, package=package, version=version, files=files)
+        deb = build_fake_deb(out, package=package, version=version, files=files, control=control)
         write_sha256sums(out)
         return deb
 
@@ -142,6 +144,15 @@ class ContractTests(PreparedDebianRepo):
         issues = self.issues(root)
         self.assertTrue(any("not the prepared Debian version" in i for i in issues))
         self.assertTrue(any("intruder has no [[debian.packages]] contract" in i for i in issues))
+
+    def test_archive_keyring_is_recommended_never_required(self) -> None:
+        root = self.prepared_repo()
+        self.stage(root, self.good_files(root), control="Depends: libc6, valkyrianlabs-archive-keyring (>= 2026)\n")
+        self.assertTrue(any("Depends on valkyrianlabs-archive-keyring" in i for i in self.issues(root)))
+        self.stage(root, self.good_files(root), control="Pre-Depends: dpkg | valkyrianlabs-archive-keyring:all\n")
+        self.assertTrue(any("Pre-Depends on valkyrianlabs-archive-keyring" in i for i in self.issues(root)))
+        self.stage(root, self.good_files(root), control="Depends: libc6\nRecommends: valkyrianlabs-archive-keyring\n")
+        self.assertEqual(self.issues(root), [])
 
     def test_checksum_tamper_detected(self) -> None:
         root = self.prepared_repo()
