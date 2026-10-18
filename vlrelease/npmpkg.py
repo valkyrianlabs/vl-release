@@ -9,6 +9,11 @@ canonical tarball's bytes (never from a second pack or build): the same members,
 contents, except the package.json `name` and every occurrence of the canonical name in the
 alias's `rewrite` members. Validation re-derives every alias and requires an exact match, so the
 packages cannot drift apart.
+
+`[[npm.packages]]` are further packages built from the same repository: each is packed from its own
+package_dir (after its own pre_pack) and checked against its own contract, and may have aliases of
+its own. Every package carries the release version, and no two names or tarball file names may
+coincide across packages.
 """
 
 from __future__ import annotations
@@ -84,10 +89,12 @@ def parse_manifest(text: str, where: str) -> NpmManifest:
     )
 
 
-def read_manifest(config: Config) -> NpmManifest:
-    path = config.resolve(_npm(config).package_dir) / PACKAGE_JSON
+def read_manifest(config: Config, npm: NpmConfig | None = None) -> NpmManifest:
+    """package.json of `npm` (default: the primary `[npm]` package)."""
+    npm = npm or _npm(config)
+    path = config.resolve(npm.package_dir) / PACKAGE_JSON
     if not path.is_file():
-        raise ConfigError(f"[npm] package_dir {_npm(config).package_dir} has no {PACKAGE_JSON}")
+        raise ConfigError(f"[npm] package_dir {npm.package_dir} has no {PACKAGE_JSON}")
     return parse_manifest(path.read_text(encoding="utf-8"), str(path.relative_to(config.root)))
 
 
@@ -115,8 +122,23 @@ def npm_tarballs(output_dir: Path) -> tuple[Path, ...]:
     return tuple(path for path in release_assets(output_dir) if path.name.endswith(".tgz"))
 
 
+@dataclass(frozen=True)
+class NpmPackage:
+    """One configured package with its package.json and every name it is published under."""
+
+    npm: NpmConfig
+    manifest: NpmManifest
+    names: tuple[str, ...]  # the package.json name first, then its `aliases`
+
+
 def require_prepared_npm(config: Config) -> tuple[str, NpmManifest]:
     """(version, manifest) for a work tree whose docs are prepared and whose package.json carries VERSION."""
+    version, packages = require_prepared_packages(config)
+    return version, packages[0].manifest
+
+
+def require_prepared_packages(config: Config) -> tuple[str, list[NpmPackage]]:
+    """(version, packages) for a prepared work tree in which every package.json carries VERSION."""
     _npm(config)
     state = read_release_state(config)
     if state.phase != "prepared" or state.version is None:
@@ -125,14 +147,15 @@ def require_prepared_npm(config: Config) -> tuple[str, NpmManifest]:
             f"Refusing to pack: the work tree is not prepared for release ({detail}). "
             "Run `vlr prepare` first; the package is packed from the prepared tree."
         )
-    manifest = read_manifest(config)
     version = str(state.version)
-    if manifest.version != version:
-        raise ReleaseError(
-            f"{_npm(config).package_dir}/{PACKAGE_JSON} has version {manifest.version}, but the release is {version}. "
-            "Add it to [version].targets so `vlr version` keeps it in sync."
-        )
-    return version, manifest
+    packages = resolve_packages(config)
+    for package in packages:
+        if package.manifest.version != version:
+            raise ReleaseError(
+                f"{package.npm.package_dir}/{PACKAGE_JSON} has version {package.manifest.version}, but the release is {version}. "
+                "Add it to [version].targets so `vlr version` keeps it in sync."
+            )
+    return version, packages
 
 
 def require_publishable_manifest(manifest: NpmManifest, where: str) -> None:
@@ -145,15 +168,39 @@ def require_publishable_manifest(manifest: NpmManifest, where: str) -> None:
         )
 
 
-def package_names(config: Config, manifest: NpmManifest) -> list[str]:
-    """Every name this build is published under: the package.json name first, then `[[npm.aliases]]`."""
-    names = [manifest.name, *(alias.name for alias in _npm(config).aliases)]
+def package_names(config: Config, manifest: NpmManifest, npm: NpmConfig | None = None) -> list[str]:
+    """Every name one build is published under: the package.json name first, then its aliases."""
+    npm = npm or _npm(config)
+    names = [manifest.name, *(alias.name for alias in npm.aliases)]
     if manifest.name in names[1:]:
         raise ConfigError(f"[[npm.aliases]] repeats the package.json name {manifest.name}")
     tarballs = [tarball_name(name, manifest.version) for name in names]
     if len(set(tarballs)) != len(tarballs):
         raise ConfigError(f"npm package names {', '.join(names)} would share a tarball file name")
     return names
+
+
+def resolve_packages(config: Config) -> list[NpmPackage]:
+    """Every configured package (`[npm]` first, then `[[npm.packages]]`) with its names.
+
+    Names and tarball file names must be unique across all packages: they share the output
+    directory and the registries.
+    """
+    packages: list[NpmPackage] = []
+    for npm in _npm(config).all_packages:
+        manifest = read_manifest(config, npm)
+        packages.append(NpmPackage(npm, manifest, tuple(package_names(config, manifest, npm))))
+    seen: dict[str, str] = {}
+    for package in packages:
+        for name in package.names:
+            key = tarball_name(name, package.manifest.version)
+            if key in seen:
+                raise ConfigError(
+                    f"npm package {name} ({package.npm.package_dir}) clashes with {seen[key]}: "
+                    "names and tarball file names must be unique across [npm] and [[npm.packages]]"
+                )
+            seen[key] = f"{name} ({package.npm.package_dir})"
+    return packages
 
 
 # --- aliases --------------------------------------------------------------------------------------
@@ -268,11 +315,14 @@ class NpmBuildResult:
     identity: NpmIdentity | None = None
     aliases: list[tuple[str, Path]] = field(default_factory=list)  # (name, tarball)
     alias_identities: list[NpmIdentity] = field(default_factory=list)
+    package_dir: str = "."
+    packages: list["NpmBuildResult"] = field(default_factory=list)  # `[[npm.packages]]` (primary result only)
 
     def as_dict(self) -> dict:
         identities = {identity.name: identity for identity in self.alias_identities}
         return {
             "name": self.name,
+            "package_dir": self.package_dir,
             "version": self.version,
             "tarball": str(self.tarball),
             "dry_run": self.dry_run,
@@ -288,6 +338,7 @@ class NpmBuildResult:
                 }
                 for name, path in self.aliases
             ],
+            "packages": [package.as_dict() for package in self.packages],
         }
 
 
@@ -333,37 +384,53 @@ def build_npm(
     runner: Runner = subprocess.run,
     log: Callable[[str], None] = print,
 ) -> NpmBuildResult:
-    npm = _npm(config)
-    version, manifest = require_prepared_npm(config)
-    require_publishable_manifest(manifest, f"{npm.package_dir}/{PACKAGE_JSON}")
-    package_dir = config.resolve(npm.package_dir)
+    """Pack every configured package; the result is the primary package's, with the others under `packages`."""
+    version, packages = require_prepared_packages(config)
+    for package in packages:
+        require_publishable_manifest(package.manifest, f"{package.npm.package_dir}/{PACKAGE_JSON}")
     output_dir = config.output_dir
-    names = package_names(config, manifest)
-    tarball = output_dir / tarball_name(manifest.name, version)
-    commands = [list(command) for command in npm.pre_pack] + [pack_command(npm.packer, output_dir)]
-    result = NpmBuildResult(manifest.name, version, tarball, dry_run, commands)
-    result.aliases = [(name, output_dir / tarball_name(name, version)) for name in names[1:]]
+    results = [_plan_build(config, package, version, dry_run) for package in packages]
+    primary = results[0]
+    primary.packages = results[1:]
     if dry_run:
-        return result
+        return primary
 
     output_dir.mkdir(parents=True, exist_ok=True)
     if clean:
         for stale in npm_tarballs(output_dir):
             stale.unlink()
-    for command in commands[:-1]:
+    for package, result in zip(packages, results):
+        _pack(config, package, result, runner, log)
+    return primary
+
+
+def _plan_build(config: Config, package: NpmPackage, version: str, dry_run: bool) -> NpmBuildResult:
+    output_dir = config.output_dir
+    npm, manifest = package.npm, package.manifest
+    tarball = output_dir / tarball_name(manifest.name, version)
+    commands = [list(command) for command in npm.pre_pack] + [pack_command(npm.packer, output_dir)]
+    result = NpmBuildResult(manifest.name, version, tarball, dry_run, commands, package_dir=npm.package_dir)
+    result.aliases = [(name, output_dir / tarball_name(name, version)) for name in package.names[1:]]
+    return result
+
+
+def _pack(config: Config, package: NpmPackage, result: NpmBuildResult, runner: Runner, log: Callable[[str], None]) -> None:
+    npm, manifest = package.npm, package.manifest
+    package_dir = config.resolve(npm.package_dir)
+    tarball = result.tarball
+    for command in result.commands[:-1]:
         _run(command, package_dir, runner, log)
-    _run(commands[-1], package_dir, runner, log, PACK_ENV)
+    _run(result.commands[-1], package_dir, runner, log, PACK_ENV)
     if not tarball.is_file():
-        produced = ", ".join(path.name for path in npm_tarballs(output_dir)) or "nothing"
-        raise ReleaseError(f"{npm.packer} pack did not write {tarball.name} to {output_dir} (found: {produced})")
-    result.identity = identify_tarball(tarball, manifest.name, version)
+        produced = ", ".join(path.name for path in npm_tarballs(config.output_dir)) or "nothing"
+        raise ReleaseError(f"{npm.packer} pack did not write {tarball.name} to {config.output_dir} (found: {produced})")
+    result.identity = identify_tarball(tarball, manifest.name, result.version)
     log(f"packed {tarball.name} sha256={result.identity.sha256} integrity={result.identity.integrity}")
     for alias, (name, path) in zip(npm.aliases, result.aliases):
         derive_alias_tarball(tarball, manifest.name, alias, path)
-        identity = identify_tarball(path, name, version)
+        identity = identify_tarball(path, name, result.version)
         result.alias_identities.append(identity)
         log(f"derived {path.name} ({name}) sha256={identity.sha256} integrity={identity.integrity}")
-    return result
 
 
 class NpmTarballContents:
@@ -395,8 +462,11 @@ class NpmTarballContents:
         return sorted(member for member in self.members if fnmatchcase(member, pattern))
 
 
-def check_npm_tarball(config: Config, path: Path, version: str, expected_name: str) -> list[str]:
-    npm = _npm(config)
+def check_npm_tarball(
+    config: Config, path: Path, version: str, expected_name: str, npm: NpmConfig | None = None
+) -> list[str]:
+    """Contract issues of one tarball against the contract of `npm` (default: the primary package)."""
+    npm = npm or _npm(config)
     name = path.name
     issues: list[str] = []
     try:
@@ -443,44 +513,55 @@ def check_npm_tarball(config: Config, path: Path, version: str, expected_name: s
 
 
 def validate_npm_artifacts(config: Config, version: str) -> tuple[list[str], list[str]]:
-    """(issues, checked file names) for the npm tarballs (canonical and aliases) in the output directory."""
-    manifest = read_manifest(config)
-    names = package_names(config, manifest)
-    expected = [tarball_name(name, version) for name in names]
+    """(issues, checked file names) for every npm tarball (each package and its aliases) in the output directory."""
+    packages = resolve_packages(config)
+    expected = [tarball_name(name, version) for package in packages for name in package.names]
     issues: list[str] = []
     for extra in npm_tarballs(config.output_dir):
         if extra.name not in expected:
             issues.append(f"unexpected npm tarball {extra.name} (expected only {', '.join(expected)})")
-    canonical = config.output_dir / expected[0]
-    if not canonical.is_file():
-        issues.append(f"npm tarball {expected[0]} is missing (run `vlr build-npm`)")
-        return issues, []
-    issues.extend(check_npm_tarball(config, canonical, version, manifest.name))
-    checked = [expected[0]]
-    for alias, file_name in zip(_npm(config).aliases, expected[1:]):
-        path = config.output_dir / file_name
-        if not path.is_file():
-            issues.append(f"npm tarball {file_name} for alias {alias.name} is missing (run `vlr build-npm`)")
+    checked: list[str] = []
+    for package in packages:
+        npm, canonical_name = package.npm, package.manifest.name
+        file_name = tarball_name(canonical_name, version)
+        canonical = config.output_dir / file_name
+        if not canonical.is_file():
+            issues.append(f"npm tarball {file_name} is missing (run `vlr build-npm`)")
             continue
-        issues.extend(check_npm_tarball(config, path, version, alias.name))
-        issues.extend(check_alias_tarball(canonical, manifest.name, alias, path))
+        issues.extend(check_npm_tarball(config, canonical, version, canonical_name, npm))
         checked.append(file_name)
+        for alias in npm.aliases:
+            alias_file = tarball_name(alias.name, version)
+            path = config.output_dir / alias_file
+            if not path.is_file():
+                issues.append(f"npm tarball {alias_file} for alias {alias.name} is missing (run `vlr build-npm`)")
+                continue
+            issues.extend(check_npm_tarball(config, path, version, alias.name, npm))
+            issues.extend(check_alias_tarball(canonical, canonical_name, alias, path))
+            checked.append(alias_file)
     return issues, checked
 
 
+def collect_package_identities(config: Config) -> list[tuple[NpmConfig, list[NpmIdentity]]]:
+    """Per package (`[npm]` first): its built tarballs for the prepared version, canonical first, then aliases."""
+    version, packages = require_prepared_packages(config)
+    collected: list[tuple[NpmConfig, list[NpmIdentity]]] = []
+    for package in packages:
+        identities: list[NpmIdentity] = []
+        for name in package.names:
+            path = config.output_dir / tarball_name(name, version)
+            if not path.is_file():
+                raise ReleaseError(f"{path.name} is not under {config.output_dir}; run `vlr build-npm` first.")
+            identities.append(identify_tarball(path, name, version))
+        collected.append((package.npm, identities))
+    return collected
+
+
 def collect_npm_identities(config: Config) -> list[NpmIdentity]:
-    """The built tarballs for the prepared version (what `publish-npm` uploads): canonical first, then aliases."""
-    version, manifest = require_prepared_npm(config)
-    identities: list[NpmIdentity] = []
-    for name in package_names(config, manifest):
-        path = config.output_dir / tarball_name(name, version)
-        if not path.is_file():
-            raise ReleaseError(f"{path.name} is not under {config.output_dir}; run `vlr build-npm` first.")
-        identities.append(identify_tarball(path, name, version))
-    return identities
+    """Every built tarball for the prepared version (what `publish-npm` uploads), package by package."""
+    return [identity for _npm_config, identities in collect_package_identities(config) for identity in identities]
 
 
 def collect_npm_identity(config: Config) -> NpmIdentity:
-    """The canonical built tarball for the prepared version."""
+    """The primary package's canonical built tarball for the prepared version."""
     return collect_npm_identities(config)[0]
-

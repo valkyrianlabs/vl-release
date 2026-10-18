@@ -56,20 +56,25 @@ def check_repository(config: Config, *, release: bool = False, tag: str | None =
                 report.errors.append(f"{config.homebrew.formula} needs top-level `url` and `sha256` lines")
 
     if config.npm is not None:
-        from vlrelease.npmpkg import PACKAGE_JSON, package_names, read_manifest, require_publishable_manifest
+        from vlrelease.npmpkg import PACKAGE_JSON, read_manifest, require_publishable_manifest, resolve_packages
 
-        manifest_path = (PurePosixPath(config.npm.package_dir) / PACKAGE_JSON).as_posix()
+        targets = {spec.path for spec in config.version.all_targets}
+        for npm in config.npm.all_packages:
+            manifest_path = (PurePosixPath(npm.package_dir) / PACKAGE_JSON).as_posix()
+            try:
+                require_publishable_manifest(read_manifest(config, npm), manifest_path)
+            except ReleaseError as exc:
+                report.errors.append(str(exc))
+            if manifest_path not in targets:
+                report.errors.append(
+                    f"{manifest_path} is not a version target; add {{ kind = \"package_json\", path = \"{manifest_path}\" }} "
+                    "(or make it the canonical version) so the npm package always carries the release version"
+                )
         try:
-            manifest = read_manifest(config)
-            require_publishable_manifest(manifest, manifest_path)
-            package_names(config, manifest)
+            resolve_packages(config)  # names and tarball file names, across every package
         except ReleaseError as exc:
-            report.errors.append(str(exc))
-        if manifest_path not in {spec.path for spec in config.version.all_targets}:
-            report.errors.append(
-                f"{manifest_path} is not a version target; add {{ kind = \"package_json\", path = \"{manifest_path}\" }} "
-                "(or make it the canonical version) so the npm package always carries the release version"
-            )
+            if str(exc) not in report.errors:
+                report.errors.append(str(exc))
 
     from vlrelease.skill import install_local_skill, install_skill
 

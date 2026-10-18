@@ -146,6 +146,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             "source_archive": config.source_archive is not None,
             "homebrew": config.homebrew is not None,
             "npm": config.npm is not None,
+            "npm_package_dirs": [npm.package_dir for npm in config.npm.all_packages] if config.npm else [],
             "npm_registries": [registry.name for registry in config.npm_registries],
         },
     )
@@ -400,16 +401,18 @@ def cmd_build_npm(args: argparse.Namespace) -> int:
     result = build_npm(_config(args), clean=not args.no_clean, dry_run=args.dry_run, log=_log(args))
     if args.json:
         _print_json(result.as_dict())
-    elif args.dry_run:
-        print(f"would pack {result.name}@{result.version} -> {result.tarball}")
-        for command in result.commands:
-            print(f"  $ {' '.join(command)}")
-        for name, path in result.aliases:
-            print(f"would derive {name}@{result.version} -> {path}")
-    else:
-        print(f"packed {result.name}@{result.version} -> {result.tarball}")
-        for name, path in result.aliases:
-            print(f"derived {name}@{result.version} -> {path}")
+        return EXIT_OK
+    for package in (result, *result.packages):
+        if args.dry_run:
+            print(f"would pack {package.name}@{package.version} -> {package.tarball}")
+            for command in package.commands:
+                print(f"  $ {' '.join(command)}")
+            for name, path in package.aliases:
+                print(f"would derive {name}@{package.version} -> {path}")
+        else:
+            print(f"packed {package.name}@{package.version} -> {package.tarball}")
+            for name, path in package.aliases:
+                print(f"derived {name}@{package.version} -> {path}")
     return EXIT_OK
 
 
@@ -677,7 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("verify-published", cmd_verify_published, "wait until the APT index lists the built .deb files by sha256")
     p.add_argument("--timeout", type=float, metavar="SECONDS")
 
-    p = add("build-npm", cmd_build_npm, "pack the npm package from the prepared work tree into the output directory")
+    p = add("build-npm", cmd_build_npm, "pack the npm packages from the prepared work tree into the output directory")
     p.add_argument("--no-clean", action="store_true", help="keep existing .tgz files in the output directory")
     p.add_argument("--dry-run", action="store_true", help="show the commands without running them")
     p = add("publish-npm", cmd_publish_npm, "publish the npm tarballs to the [[publish.npm]] registries (idempotent, verified)")

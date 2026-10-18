@@ -173,7 +173,8 @@ Requires `[debian]`. Upload credentials and the upload URL come from the environ
 ## `[npm]`
 
 Enabled by its presence. `vlr build-npm` packs the package from the prepared work tree into the
-output directory (plus one derived tarball per `[[npm.aliases]]` name); those tarballs are
+output directory (plus one derived tarball per `[[npm.aliases]]` name, and the packages of any
+`[[npm.packages]]` tables, below); those tarballs are
 checksummed, validated, attached to the GitHub release and published unchanged. The package name and version come from `package_dir/package.json`, which
 must be a version target (or the canonical version) and must not set `"private": true` or
 `publishConfig.registry`.
@@ -219,6 +220,49 @@ pre_pack = [["pnpm", "build"]]
 [[npm.aliases]]
 name = "tool"
 rewrite = ["package/dist/package-name.js", "package/dist/package-name.js.map"]
+```
+
+### `[[npm.packages]]`
+
+More npm packages built from the same repository, each **independently**: its own directory and
+package.json, its own pre-pack commands, tarball contract, dist-tags, access and aliases. Use it
+for packages with different contents (e.g. a plugin and a small client SDK released from one
+repository); for the same build under another name use `[[npm.aliases]]`.
+
+Each table takes every per-package `[npm]` key above (`packer`, `pre_pack`, `required_paths`,
+`forbidden_paths`, `any_of`, `identical_files`, `dist_tag`, `maintenance_dist_tag`, `access`,
+`aliases` as `[[npm.packages.aliases]]`, `enabled`), except that `package_dir` is **required**
+and must differ from every other package's. Tables cannot nest further `packages`.
+
+- Every package's `package_dir/package.json` must be a version target (or the canonical version),
+  so all packages always carry the release version; `vlr check` reports one that is not.
+- Package names, alias names and tarball file names must be unique across `[npm]` and every
+  `[[npm.packages]]` (they share the output directory and the registries).
+- `vlr build-npm` packs `[npm]` first, then each package in file order, running its `pre_pack`
+  commands in its own `package_dir`. `validate-artifacts` checks every tarball against its own
+  package's contract; checksums, `vlr artifacts` and `vlr github-release` cover them like any
+  other asset.
+- `vlr publish-npm` plans every name of every package on every registry before uploading
+  anything, then uploads aliases, then the `[[npm.packages]]` packages, then the `[npm]`
+  package last (see `vlr help ci`).
+
+```toml
+[version]
+canonical = "VERSION"
+targets = [
+  { kind = "package_json", path = "package.json" },
+  { kind = "package_json", path = "packages/client/package.json" },
+]
+
+[npm]
+pre_pack = [["pnpm", "build"]]
+required_paths = ["package/package.json", "package/dist/index.js"]
+
+[[npm.packages]]
+package_dir = "packages/client"
+pre_pack = [["pnpm", "build"]]
+required_paths = ["package/package.json", "package/dist/index.js"]
+forbidden_paths = ["package/src/*", "package/node_modules/*"]
 ```
 
 ## `[[publish.npm]]`

@@ -141,7 +141,11 @@ class NpmAlias:
 
 @dataclass(frozen=True)
 class NpmConfig:
-    """The npm package built from this repository (`vlr build-npm`)."""
+    """An npm package built from this repository (`vlr build-npm`).
+
+    `[npm]` is the primary package; each `[[npm.packages]]` table is another, independently built
+    package with the same keys (its own package_dir, contract, dist-tags and aliases).
+    """
 
     package_dir: str = "."
     packer: str = "npm"
@@ -154,6 +158,12 @@ class NpmConfig:
     maintenance_dist_tag: str = "maintenance"
     access: str = "public"
     aliases: tuple[NpmAlias, ...] = ()
+    packages: tuple["NpmConfig", ...] = ()  # `[[npm.packages]]`; only on the primary package
+
+    @property
+    def all_packages(self) -> tuple["NpmConfig", ...]:
+        """The primary package first, then every `[[npm.packages]]` package, in file order."""
+        return (self, *self.packages)
 
 
 @dataclass(frozen=True)
@@ -708,48 +718,75 @@ def _parse_npm(table: _Table | None) -> NpmConfig | None:
     if table is None:
         return None
     enabled = table.boolean("enabled", True)
+    config = _parse_npm_package(table, "npm", packages=_parse_npm_packages(table.raw("packages")))
+    dirs = [package.package_dir for package in config.all_packages]
+    if len(dirs) != len(set(dirs)):
+        raise ConfigError("npm.packages repeats a package_dir (each package is packed from its own directory)")
+    return config if enabled else None
+
+
+def _parse_npm_packages(raw: Any) -> tuple[NpmConfig, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError("npm.packages must be an array of tables ([[npm.packages]], one per extra package)")
+    packages: list[NpmConfig] = []
+    for index, item in enumerate(raw):
+        where = f"npm.packages[{index}]"
+        table = _Table(item, where)
+        enabled = table.boolean("enabled", True)
+        # Unlike the primary package (the repository root by default), an extra package always names its directory.
+        table.string("package_dir", required=True)
+        package = _parse_npm_package(table, where)
+        if enabled:
+            packages.append(package)
+    return tuple(packages)
+
+
+def _parse_npm_package(table: _Table, where: str, *, packages: tuple[NpmConfig, ...] = ()) -> NpmConfig:
     defaults = NpmConfig()
     config = NpmConfig(
-        package_dir=_relative_path(table.string("package_dir", defaults.package_dir) or ".", "npm.package_dir"),
+        package_dir=_relative_path(table.string("package_dir", defaults.package_dir) or ".", f"{where}.package_dir"),
         packer=table.string("packer", defaults.packer) or defaults.packer,
         pre_pack=table.commands("pre_pack"),
         required_paths=tuple(_normalize_member(p) for p in table.strings("required_paths")),
         forbidden_paths=tuple(_normalize_member(p) for p in table.strings("forbidden_paths")),
-        any_of=_parse_any_of(table, "npm"),
-        identical_files=_parse_identical_files(table, "npm"),
+        any_of=_parse_any_of(table, where),
+        identical_files=_parse_identical_files(table, where),
         dist_tag=table.string("dist_tag", defaults.dist_tag) or defaults.dist_tag,
         maintenance_dist_tag=table.string("maintenance_dist_tag", defaults.maintenance_dist_tag)
         or defaults.maintenance_dist_tag,
         access=table.string("access", defaults.access) or defaults.access,
-        aliases=_parse_npm_aliases(table.raw("aliases")),
+        aliases=_parse_npm_aliases(table.raw("aliases"), f"{where}.aliases"),
+        packages=packages,
     )
     table.finish()
     if config.packer not in NPM_PACKERS:
-        raise ConfigError(f"npm.packer must be one of {', '.join(NPM_PACKERS)}, got {config.packer!r}")
+        raise ConfigError(f"{where}.packer must be one of {', '.join(NPM_PACKERS)}, got {config.packer!r}")
     if config.access not in NPM_ACCESS:
-        raise ConfigError(f"npm.access must be one of {', '.join(NPM_ACCESS)}, got {config.access!r}")
+        raise ConfigError(f"{where}.access must be one of {', '.join(NPM_ACCESS)}, got {config.access!r}")
     for key in ("dist_tag", "maintenance_dist_tag"):
         if not _NPM_DIST_TAG.fullmatch(getattr(config, key)):
-            raise ConfigError(f"npm.{key} {getattr(config, key)!r} must be a lowercase npm dist-tag such as \"latest\"")
+            raise ConfigError(f"{where}.{key} {getattr(config, key)!r} must be a lowercase npm dist-tag such as \"latest\"")
     if config.dist_tag == config.maintenance_dist_tag:
-        raise ConfigError("npm.maintenance_dist_tag must differ from npm.dist_tag")
+        raise ConfigError(f"{where}.maintenance_dist_tag must differ from {where}.dist_tag")
     for pattern in (*config.required_paths, *config.forbidden_paths, *(p for group in config.any_of for p in group)):
         if not pattern.startswith("package/"):
-            raise ConfigError(f"npm contract path {pattern!r} must start with \"package/\" (npm tarball members do)")
+            raise ConfigError(f"{where} contract path {pattern!r} must start with \"package/\" (npm tarball members do)")
     for pair in config.identical_files:
         if not pair.member.startswith("package/"):
-            raise ConfigError(f"npm.identical_files member {pair.member!r} must start with \"package/\"")
-    return config if enabled else None
+            raise ConfigError(f"{where}.identical_files member {pair.member!r} must start with \"package/\"")
+    return config
 
 
-def _parse_npm_aliases(raw: Any) -> tuple[NpmAlias, ...]:
+def _parse_npm_aliases(raw: Any, prefix: str = "npm.aliases") -> tuple[NpmAlias, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise ConfigError("npm.aliases must be an array of tables ([[npm.aliases]], one per extra package name)")
+        raise ConfigError(f"{prefix} must be an array of tables ([[{prefix}]], one per extra package name)")
     aliases: list[NpmAlias] = []
     for index, item in enumerate(raw):
-        where = f"npm.aliases[{index}]"
+        where = f"{prefix}[{index}]"
         table = _Table(item, where)
         alias = NpmAlias(
             name=table.string("name", required=True) or "",
@@ -767,7 +804,7 @@ def _parse_npm_aliases(raw: Any) -> tuple[NpmAlias, ...]:
         aliases.append(alias)
     names = [alias.name for alias in aliases]
     if len(names) != len(set(names)):
-        raise ConfigError("npm.aliases lists the same package name more than once")
+        raise ConfigError(f"{prefix} lists the same package name more than once")
     return tuple(aliases)
 
 

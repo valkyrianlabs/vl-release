@@ -132,13 +132,14 @@ def render_local_skill(config: Config) -> str:
             "published by release CI with `vlr publish-deb`"
         )
     if config.npm is not None:
-        npm = config.npm
-        details = [f"packed with `{npm.packer}` from `{npm.package_dir}`", f"dist-tag `{npm.dist_tag}`"]
-        if npm.pre_pack:
-            details.append("pre-pack: " + "; ".join(f"`{' '.join(cmd)}`" for cmd in npm.pre_pack))
-        if npm.aliases:
-            details.append("also published as " + ", ".join(f"`{alias.name}`" for alias in npm.aliases) + " (`[[npm.aliases]]`, derived from the same tarball)")
-        channels.append("- **npm package** (built by `vlr build-npm`): " + ", ".join(details))
+        for npm in config.npm.all_packages:
+            details = [f"packed with `{npm.packer}` from `{npm.package_dir}`", f"dist-tag `{npm.dist_tag}`"]
+            if npm.pre_pack:
+                details.append("pre-pack: " + "; ".join(f"`{' '.join(cmd)}`" for cmd in npm.pre_pack))
+            if npm.aliases:
+                details.append("also published as " + ", ".join(f"`{alias.name}`" for alias in npm.aliases) + " (`[[npm.aliases]]`, derived from the same tarball)")
+            kind = "npm package" if npm is config.npm else "npm package (`[[npm.packages]]`)"
+            channels.append(f"- **{kind}** (built by `vlr build-npm`): " + ", ".join(details))
         for registry in config.npm_registries:
             where = registry.registry or f"the URL in `{registry.registry_env}`"
             channels.append(f"  - registry `{registry.name}`: {where} (auth `{registry.auth}`), published with `vlr publish-npm`")

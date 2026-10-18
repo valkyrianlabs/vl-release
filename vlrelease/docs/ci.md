@@ -73,20 +73,24 @@ the build job. The publishing job needs:
 Registries are published in the order they are listed; a rerun skips the ones that already
 carry the identical tarball.
 
-With `[[npm.aliases]]`, every package name is planned on every registry first (a conflict on any
-of them refuses the whole run before an upload), then the aliases are uploaded, then the canonical
-package. If an alias upload fails, the canonical package has not moved; fix the cause and re-run
-the job: whatever is already published with identical bytes is skipped.
+With `[[npm.aliases]]` or `[[npm.packages]]`, every package name is planned on every registry
+first (a conflict on any of them refuses the whole run before an upload), then the aliases are
+uploaded, then the `[[npm.packages]]` packages, then the `[npm]` package. If an upload fails, the
+`[npm]` package has not moved; fix the cause and re-run the job: whatever is already published
+with identical bytes is skipped. The same publish job publishes every package; it needs no extra
+steps.
 
-A **new** alias on npmjs.com cannot use trusted publishing yet: npm only lets you configure a
-trusted publisher for a package that exists. Bootstrap it once with the CI-built bytes:
+A **new** alias or `[[npm.packages]]` package on npmjs.com cannot use trusted publishing yet: npm
+only lets you configure a trusted publisher for a package that exists. Bootstrap it once with the
+CI-built bytes:
 
-1. Let the release run; its publish job fails on the alias (nothing else is uploaded yet).
-2. Download the build job's artifact and publish the alias tarball by hand, e.g.
-   `npm publish ./release/<alias>-<version>.tgz --access public` (logged in as an owner).
+1. Let the release run; its publish job fails on the new name (the `[npm]` package is not uploaded
+   yet; names uploaded before it are skipped as identical on the re-run).
+2. Download the build job's artifact and publish the new tarball by hand, e.g.
+   `npm publish ./release/<name>-<version>.tgz --access public` (logged in as an owner).
 3. On npmjs.com, add the trusted publisher to the new package (same repository, workflow file and
-   environment as the canonical package).
-4. Re-run the failed jobs: the alias is skipped as identical, the canonical package is published.
+   environment as the `[npm]` package).
+4. Re-run the failed jobs: the new package is skipped as identical, the rest is published.
 
 ## Ordering
 

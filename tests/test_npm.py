@@ -766,3 +766,256 @@ class PublishNpmAliasTests(PreparedNpmRepo):
         )
         self.assertEqual(identity.name, "@demo/widget")
         self.assertEqual(verified, ["@demo/widget@npmjs", "widget@npmjs"])
+
+
+CONSUMER_JSON = '{\n  "name": "@demo/consumer",\n  "version": "%s",\n  "files": ["consumer.js"]\n}\n'
+
+PACKAGES_CONFIG = (
+    ALIAS_CONFIG.replace(
+        'canonical = { kind = "package_json", path = "package.json" }',
+        'canonical = { kind = "package_json", path = "package.json" }\n'
+        'targets = [{ kind = "package_json", path = "packages/consumer/package.json" }]',
+    ).replace(
+        "[[publish.npm]]",
+        '[[npm.packages]]\npackage_dir = "packages/consumer"\ndist_tag = "stable"\naccess = "restricted"\n'
+        'pre_pack = [["sh", "-c", "echo built > consumer.js"]]\n'
+        'required_paths = ["package/package.json", "package/consumer.js"]\nforbidden_paths = ["package/index.js"]\n\n'
+        "[[publish.npm]]",
+        1,
+    )
+)
+
+CONSUMER_FILES = {
+    "package/package.json": (CONSUMER_JSON % "1.2.0").encode(),
+    "package/consumer.js": b"built\n",
+}
+
+
+class NpmPackagesConfigTests(RepoTestCase):
+    def load(self, text: str):
+        root = self.make_repo(
+            config=text,
+            files={"package.json": PACKAGE_JSON % "1.0.0", "packages/consumer/package.json": CONSUMER_JSON % "1.0.0"},
+            commit=False,
+        )
+        return self.config(root)
+
+    def test_parses_extra_packages(self) -> None:
+        config = self.load(PACKAGES_CONFIG)
+        primary, consumer = config.npm.all_packages
+        self.assertEqual((primary.package_dir, [a.name for a in primary.aliases]), (".", ["widget"]))
+        self.assertEqual(
+            (consumer.package_dir, consumer.dist_tag, consumer.access, consumer.aliases, consumer.packages),
+            ("packages/consumer", "stable", "restricted", (), ()),
+        )
+        self.assertEqual(consumer.required_paths, ("package/package.json", "package/consumer.js"))
+        self.assertEqual(self.load(NPM_CONFIG).npm.packages, ())
+
+    def test_rejects_bad_extra_packages(self) -> None:
+        table = '[[npm.packages]]\npackage_dir = "packages/consumer"\n'
+        for bad, message in (
+            ("[[npm.packages]]\n", r"npm.packages\[0\].package_dir is required"),
+            (table.replace("packages/consumer", "."), "repeats a package_dir"),
+            (table + 'packer = "yarn"\n', r"npm.packages\[0\].packer must be one of"),
+            (table + 'required_paths = ["consumer.js"]\n', r"npm.packages\[0\] contract path"),
+            (table + "[[npm.packages.packages]]\npackage_dir = \"x\"\n", "unknown key"),
+            (table + '[[npm.packages.aliases]]\nname = "Bad"\n', r"npm.packages\[0\].aliases\[0\].name"),
+            (table.replace("packages/consumer", "../elsewhere"), "package_dir"),
+        ):
+            text = PACKAGES_CONFIG.replace(PACKAGES_CONFIG[PACKAGES_CONFIG.index("[[npm.packages]]") : PACKAGES_CONFIG.index("\n\n[[publish.npm]]")], bad.rstrip("\n"))
+            with self.subTest(bad=bad), self.assertRaisesRegex(ConfigError, message):
+                self.load(text)
+
+    def test_disabled_extra_package_is_ignored(self) -> None:
+        config = self.load(PACKAGES_CONFIG.replace('package_dir = "packages/consumer"', 'package_dir = "packages/consumer"\nenabled = false'))
+        self.assertEqual(config.npm.packages, ())
+
+    def test_check_requires_each_package_json_as_a_version_target(self) -> None:
+        text = PACKAGES_CONFIG.replace('targets = [{ kind = "package_json", path = "packages/consumer/package.json" }]\n', "")
+        root = self.make_repo(
+            config=text, files={"package.json": PACKAGE_JSON % "1.0.0", "packages/consumer/package.json": CONSUMER_JSON % "1.0.0"}
+        )
+        report = check_repository(self.config(root))
+        self.assertTrue(
+            any("packages/consumer/package.json is not a version target" in error for error in report.errors), report.errors
+        )
+
+    def test_check_rejects_names_shared_across_packages(self) -> None:
+        for consumer_name, message in (("@demo/widget", "clashes with @demo/widget"), ("widget", "clashes with widget")):
+            root = self.make_repo(
+                config=PACKAGES_CONFIG,
+                files={
+                    "package.json": PACKAGE_JSON % "1.0.0",
+                    "packages/consumer/package.json": (CONSUMER_JSON % "1.0.0").replace("@demo/consumer", consumer_name),
+                },
+            )
+            report = check_repository(self.config(root))
+            with self.subTest(consumer_name=consumer_name):
+                self.assertTrue(any(message in error for error in report.errors), report.errors)
+
+    def test_check_passes_and_the_project_skill_lists_every_package(self) -> None:
+        from vlrelease.skill import render_local_skill
+
+        root = self.make_repo(
+            config=PACKAGES_CONFIG,
+            files={"package.json": PACKAGE_JSON % "1.0.0", "packages/consumer/package.json": CONSUMER_JSON % "1.0.0"},
+        )
+        config = self.config(root)
+        report = check_repository(config)
+        self.assertFalse([e for e in report.errors if "npm" in e or "package" in e], report.errors)
+        rendered = render_local_skill(config)
+        self.assertIn("**npm package (`[[npm.packages]]`)** (built by `vlr build-npm`): packed with `npm` from `packages/consumer`", rendered)
+        code, out, _err = self.vlr("--repo", str(root), "status", "--json")
+        self.assertEqual(json.loads(out)["channels"]["npm_package_dirs"], [".", "packages/consumer"])
+
+
+class NpmPackagesRepo(PreparedNpmRepo):
+    def packages_repo(self) -> Path:
+        root = self.make_repo(
+            config=PACKAGES_CONFIG,
+            version="1.2.0",
+            files={
+                "package.json": PACKAGE_JSON % "1.2.0",
+                "index.js": "module.exports = 42\n",
+                "README.md": "# widget\n",
+                "packages/consumer/package.json": CONSUMER_JSON % "1.2.0",
+            },
+        )
+        prepare_release(self.config(root))
+        return root
+
+    def fake_build(self, root: Path, consumer_files: dict[str, bytes] | None = None):
+        seen: list[tuple[list[str], Path]] = []
+
+        def runner(command, **kwargs):
+            seen.append((command, kwargs["cwd"]))
+            if command[:2] == ["npm", "pack"] and kwargs["cwd"] == root / "packages/consumer":
+                write_tarball(root / "release" / "demo-consumer-1.2.0.tgz", consumer_files or CONSUMER_FILES)
+            elif command[:2] == ["npm", "pack"]:
+                write_tarball(
+                    root / "release" / "demo-widget-1.2.0.tgz",
+                    {
+                        "package/package.json": (PACKAGE_JSON % "1.2.0").encode(),
+                        "package/index.js": b"module.exports = 42\n",
+                        "package/README.md": b"# widget\n",
+                        "package/name.js": b"module.exports = '@demo/widget'\n",
+                    },
+                )
+            return subprocess.CompletedProcess(command, 0)
+
+        result = build_npm(self.config(root), runner=runner, log=lambda _line: None)
+        write_sha256sums(root / "release")
+        return result, seen
+
+
+class NpmPackagesBuildTests(NpmPackagesRepo):
+    def test_builds_every_package_in_its_own_directory(self) -> None:
+        root = self.packages_repo()
+        result, seen = self.fake_build(root)
+        self.assertEqual(
+            [(command[:2], cwd.relative_to(root).as_posix()) for command, cwd in seen],
+            [(["npm", "pack"], "."), (["sh", "-c"], "packages/consumer"), (["npm", "pack"], "packages/consumer")],
+        )
+        self.assertEqual(result.tarball.name, "demo-widget-1.2.0.tgz")
+        self.assertEqual([(p.name, p.tarball.name, p.package_dir) for p in result.packages], [("@demo/consumer", "demo-consumer-1.2.0.tgz", "packages/consumer")])
+        self.assertEqual(result.as_dict()["packages"][0]["integrity"], result.packages[0].identity.integrity)
+        report = validate_artifacts(self.config(root))
+        self.assertEqual(report.issues, [])
+        self.assertEqual(sorted(report.checked)[:3], ["demo-consumer-1.2.0.tgz", "demo-widget-1.2.0.tgz", "widget-1.2.0.tgz"])
+
+    def test_each_package_is_validated_against_its_own_contract(self) -> None:
+        root = self.packages_repo()
+        self.fake_build(root, {"package/package.json": (CONSUMER_JSON % "1.2.0").encode(), "package/index.js": b"x"})
+        issues = "\n".join(validate_artifacts(self.config(root)).issues)
+        self.assertIn("demo-consumer-1.2.0.tgz: required path missing: package/consumer.js", issues)
+        self.assertIn("demo-consumer-1.2.0.tgz: forbidden path present: package/index.js", issues)
+        self.assertNotIn("demo-widget-1.2.0.tgz:", issues)
+        (root / "release" / "demo-consumer-1.2.0.tgz").unlink()
+        issues = "\n".join(validate_artifacts(self.config(root)).issues)
+        self.assertIn("npm tarball demo-consumer-1.2.0.tgz is missing", issues)
+
+    def test_every_package_must_carry_the_release_version(self) -> None:
+        root = self.packages_repo()
+        (root / "packages/consumer/package.json").write_text(CONSUMER_JSON % "1.1.0", encoding="utf-8")
+        # The version target makes the release state itself refuse the tree.
+        with self.assertRaisesRegex(ReleaseError, "packages/consumer/package.json .* declares 1.1.0"):
+            build_npm(self.config(root), runner=lambda *a, **k: subprocess.CompletedProcess(a, 0), log=lambda _l: None)
+
+    def test_dry_run_lists_every_package(self) -> None:
+        root = self.packages_repo()
+        code, out, _err = self.vlr("--repo", str(root), "build-npm", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("would pack @demo/widget@1.2.0", out)
+        self.assertIn("would derive widget@1.2.0", out)
+        self.assertIn("would pack @demo/consumer@1.2.0", out)
+
+
+@requires_tools("npm")
+class NpmPackagesRealPackTests(NpmPackagesRepo):
+    def test_real_npm_pack_of_every_package(self) -> None:
+        root = self.packages_repo()
+        config = PACKAGES_CONFIG.replace('rewrite = ["package/name.js"]', 'rewrite = ["package/index.js"]')
+        (root / "release.toml").write_text(config, encoding="utf-8")
+        (root / "index.js").write_text("module.exports = '@demo/widget'\n", encoding="utf-8")
+        build_npm(self.config(root), log=lambda _line: None)
+        write_sha256sums(root / "release")
+        self.assertEqual(validate_artifacts(self.config(root)).issues, [])
+        self.assertEqual(
+            sorted(p.name for p in (root / "release").glob("*.tgz")),
+            ["demo-consumer-1.2.0.tgz", "demo-widget-1.2.0.tgz", "widget-1.2.0.tgz"],
+        )
+
+
+class PublishNpmPackagesTests(NpmPackagesRepo):
+    NPMJS = "registry.npmjs.org"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = self.packages_repo()
+        self.fake_build(self.root)
+        self.consumer = identify_tarball(self.root / "release" / "demo-consumer-1.2.0.tgz", "@demo/consumer", "1.2.0")
+        self.registries = PackageRegistries()
+        self.accesses: list[tuple[str, str]] = []
+
+    def upload(self, identity, settings, tag, access) -> None:
+        self.accesses.append((identity.name, access))
+        self.registries.upload(identity, settings, tag, access)
+
+    def publish(self, **kwargs):
+        options = dict(env=ENV, uploader=self.upload, packument_get=self.registries.get, sleep=lambda _s: None, log=lambda _l: None)
+        options.update(kwargs)
+        return publish_npm(self.config(self.root), **options)
+
+    def test_publishes_aliases_then_extra_packages_then_the_primary_package(self) -> None:
+        result = self.publish(registries=["npmjs"])
+        self.assertEqual(
+            self.registries.uploads,
+            [("widget", "npmjs", "latest"), ("@demo/consumer", "npmjs", "stable"), ("@demo/widget", "npmjs", "latest")],
+        )
+        self.assertEqual(dict(self.accesses), {"widget": "public", "@demo/consumer": "restricted", "@demo/widget": "public"})
+        self.assertEqual(result.identity.name, "@demo/widget")
+        self.assertEqual([p["package"] for p in result.as_dict()["packages"]], ["@demo/widget", "widget", "@demo/consumer"])
+
+    def test_conflict_on_an_extra_package_refuses_before_uploading_anything(self) -> None:
+        self.registries.add_package(self.NPMJS, "@demo/consumer", "1.2.0", "sha512-different")
+        with self.assertRaisesRegex(IntegrityError, "REFUSING TO OVERWRITE.*@demo/consumer@1.2.0"):
+            self.publish()
+        self.assertEqual(self.registries.uploads, [])
+
+    def test_failed_extra_package_upload_leaves_the_primary_package_alone(self) -> None:
+        self.registries.fail_for = {"@demo/consumer"}
+        with self.assertRaisesRegex(ReleaseError, "E404"):
+            self.publish(registries=["npmjs"])
+        self.assertEqual(self.registries.uploads, [("widget", "npmjs", "latest")])
+        self.registries.add_package(self.NPMJS, "@demo/consumer", "1.2.0", self.consumer.integrity)
+        self.registries.fail_for = set()
+        self.publish(registries=["npmjs"])
+        self.assertEqual(self.registries.uploads[-1], ("@demo/widget", "npmjs", "latest"))
+
+    def test_verify_npm_uses_each_package_dist_tag(self) -> None:
+        self.publish(registries=["npmjs"])
+        _identity, verified = verify_npm(
+            self.config(self.root), registries=["npmjs"], env=ENV, packument_get=self.registries.get, sleep=lambda _s: None, log=lambda _l: None
+        )
+        self.assertEqual(verified, ["@demo/widget@npmjs", "widget@npmjs", "@demo/consumer@npmjs"])
+        self.assertEqual(self.registries.packuments[f"{self.NPMJS}/@demo/consumer"]["dist-tags"], {"stable": "1.2.0"})

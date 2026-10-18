@@ -55,7 +55,7 @@ def run_doctor(config: Config | None, *, strict: bool = False) -> list[Check]:
     checks.append(_tool("curl", "publish-deb uploads", required=strict and config is not None and config.apt is not None))
     npm = config is not None and config.npm is not None
     checks.append(_tool("npm", "build-npm / publish-npm", required=strict and npm))
-    if config is not None and config.npm is not None and config.npm.packer == "pnpm":
+    if config is not None and config.npm is not None and any(npm.packer == "pnpm" for npm in config.npm.all_packages):
         checks.append(_tool("pnpm", "build-npm (packer = pnpm)", required=strict))
     checks.append(_tool("gh", "github-release", required=False))
     checks.append(_tool("ruby", "Homebrew formula syntax check", required=False, version_args=("-v",)))

@@ -5,11 +5,12 @@ The same contract as APT publication, per `[[publish.npm]]` registry, against th
   present with identical dist.integrity  -> skip (pipeline re-run)
   present with a different integrity     -> refuse (a published version is immutable)
   packument unreadable                   -> refuse (never guess)
-Every package (the canonical name and each `[[npm.aliases]]` name) is planned on every registry
-before anything is uploaded anywhere, so a conflict on one cannot leave the release half-published.
-Aliases are uploaded before the canonical package: when an alias cannot be published (for example
-its trusted publisher is not configured yet), the run fails before the canonical package moves, and
-a re-run skips whatever is already there with identical bytes. After uploading, each packument is
+Every package name (each package's own name and its `aliases`, for `[npm]` and every
+`[[npm.packages]]` package) is planned on every registry before anything is uploaded anywhere, so a
+conflict on one cannot leave the release half-published. Aliases are uploaded first, then the
+`[[npm.packages]]` packages, then the primary `[npm]` package: when a name cannot be published (for
+example its trusted publisher is not configured yet), the run fails before the primary package
+moves, and a re-run skips whatever is already there with identical bytes. After uploading, each packument is
 polled until it lists the version with the expected integrity and the dist-tag points at it.
 
 Uploads go through the npm CLI (`npm publish <tarball>`), which publishes the validated tarball
@@ -43,9 +44,9 @@ from urllib.request import Request, urlopen
 
 from vlrelease.apt_index import DEFAULT_HTTP_HEADERS, redact_url
 from vlrelease.checksums import SHA256SUMS_NAME, read_sha256sums
-from vlrelease.config import Config, NpmRegistryConfig
+from vlrelease.config import Config, NpmConfig, NpmRegistryConfig
 from vlrelease.errors import ConfigError, IntegrityError, ReleaseError
-from vlrelease.npmpkg import NpmIdentity, collect_npm_identities
+from vlrelease.npmpkg import NpmIdentity, collect_package_identities
 from vlrelease.semver import SEMVER_PATTERN, Version
 
 # `nexus` is accepted because repositories that also publish to APT set RELEASE_PUBLISH_MODE=nexus;
@@ -523,39 +524,42 @@ def publish_npm(
 
     # A dry run only reads the registries, so it needs no upload credentials (reads still use them when set).
     settings = [resolve_registry(registry, environment, require_credentials=not dry_run) for registry in selected]
-    identities = collect_npm_identities(config)
+    packages = collect_package_identities(config)
+    identities = [identity for _package, package_identities in packages for identity in package_identities]
     for identity in identities:
         require_checksummed(config, identity)
     get = packument_get or default_packument_get
 
-    # Plan every package on every registry before uploading anywhere.
-    steps: list[tuple[NpmIdentity, RegistrySettings, NpmPublishPlan]] = []
-    for identity in identities:
-        for registry in settings:
-            plan = plan_registry(
-                identity,
-                registry,
-                load_packument(registry, identity.name, get),
-                dist_tag=config.npm.dist_tag,
-                maintenance_dist_tag=config.npm.maintenance_dist_tag,
-                allow_older_version=allow_older_version,
-            )
-            tag_note = f" under `{plan.dist_tag}`" if plan.dist_tag else ""
-            log(f"{identity.path.name} -> {registry.name} ({registry.url}): {plan.action}{tag_note} ({plan.reason})")
-            steps.append((identity, registry, plan))
+    # Plan every package on every registry before uploading anywhere. Upload order: aliases (0), the
+    # [[npm.packages]] packages (1), the primary package (2), so a failing name stops the run before
+    # the primary package moves.
+    steps: list[tuple[int, NpmIdentity, RegistrySettings, NpmPublishPlan, NpmConfig]] = []
+    for index, (package, package_identities) in enumerate(packages):
+        for position, identity in enumerate(package_identities):
+            rank = 0 if position else (2 if index == 0 else 1)
+            for registry in settings:
+                plan = plan_registry(
+                    identity,
+                    registry,
+                    load_packument(registry, identity.name, get),
+                    dist_tag=package.dist_tag,
+                    maintenance_dist_tag=package.maintenance_dist_tag,
+                    allow_older_version=allow_older_version,
+                )
+                tag_note = f" under `{plan.dist_tag}`" if plan.dist_tag else ""
+                log(f"{identity.path.name} -> {registry.name} ({registry.url}): {plan.action}{tag_note} ({plan.reason})")
+                steps.append((rank, identity, registry, plan, package))
     result = NpmPublishResult(
-        mode=resolved_mode, dry_run=dry_run, identity=identities[0], identities=identities, plans=[step[2] for step in steps]
+        mode=resolved_mode, dry_run=dry_run, identity=identities[0], identities=identities, plans=[step[3] for step in steps]
     )
     if dry_run:
         return result
 
     upload = uploader or (lambda ident, reg, tag, access: publish_with_npm(ident, reg, tag, access, env=environment))
-    canonical = identities[0].name
-    # Aliases first: an alias that cannot be published stops the run before the canonical package moves.
-    for identity, registry, plan in sorted(steps, key=lambda step: step[0].name == canonical):
+    for _rank, identity, registry, plan, package in sorted(steps, key=lambda step: step[0]):
         if plan.action == ACTION_UPLOAD and plan.dist_tag:
             log(f"publishing {identity.name}@{identity.version} to {registry.name} under `{plan.dist_tag}`")
-            upload(identity, registry, plan.dist_tag, config.npm.access)
+            upload(identity, registry, plan.dist_tag, package.access)
         verify_registry(
             identity,
             registry,
@@ -584,16 +588,17 @@ def verify_npm(
     environment = os.environ if env is None else env
     if config.npm is None:
         raise ConfigError("[npm] is not enabled in release.toml")
-    identities = collect_npm_identities(config)
+    packages = collect_package_identities(config)
+    identities = [identity for _package, package_identities in packages for identity in package_identities]
     get = packument_get or default_packument_get
     verified: list[str] = []
     for registry in select_registries(config, registries):
         settings = resolve_registry(registry, environment, require_credentials=False)
-        for identity in identities:
+        for package, identity in ((package, identity) for package, ids in packages for identity in ids):
             packument = load_packument(settings, identity.name, get)
             # The dist-tag is only awaited when this version should be (or become) its target.
-            tag: str | None = config.npm.dist_tag
-            if _older_than(identity.version, _dist_tag_version(packument, config.npm.dist_tag)):
+            tag: str | None = package.dist_tag
+            if _older_than(identity.version, _dist_tag_version(packument, package.dist_tag)):
                 tag = None
             verify_registry(
                 identity,
