@@ -51,7 +51,7 @@ name = "{package}-{version}.tar.gz"
 repository_url = "https://apt.valkyrianlabs.com"
 suite = "stable"
 components = ["main"]
-architectures = ["amd64", "all"]   # Nexus lists Architecture: all packages in binary-all
+architectures = ["amd64"]   # Apthalla (Debian layout) lists Architecture: all packages in every binary-<arch>
 
 [homebrew]
 formula = "packaging/homebrew/vl-release.rb"
