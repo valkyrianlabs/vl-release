@@ -266,10 +266,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      # main's ruleset ("Core-Maintainer Only - Push Main") only lets admins push directly, and GitHub Actions can't be a
+      # bypass actor: vlr finalize pushes with the org secret RELEASE_FINALIZE_TOKEN (a bypass actor's token,
+      # contents read/write). Without it, publication still succeeds and only this job fails (v0.7.0 was recorded
+      # by hand for that reason).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_FINALIZE_TOKEN || github.token }}
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
