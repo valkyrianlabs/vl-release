@@ -39,7 +39,9 @@ A broken installed package therefore never prevents building its own fix.
 ```
 release.toml                     the per-repository configuration (`vlr help config`)
 .release/CHANGELOG_NEXT.md       staged package-facing changes (when [debian] is enabled)
-.release/RELEASE_NOTES_NEXT.md   staged user-facing release notes
+.release/RELEASE_NOTES_NEXT.md   staged user-facing release notes (and the release title)
+.release/notes.d/*.md            per-change release-note fragments (one new file per change)
+.release/changelog.d/*.md        per-change changelog fragments
 RELEASE_NOTES.md                 published release-notes history (written by vlr prepare)
 debian/changelog                 published Debian history (written by vlr prepare)
 ```
@@ -92,6 +94,11 @@ You can now frobnicate. ## headings, lists and code blocks are fine.
 
 HTML comments are ignored, so the reset templates are pure guidance. Placeholders (`TODO`,
 `TBD`, `<title>`, …) are rejected.
+
+With several branches in flight, add a **fragment** per change instead of editing the shared files:
+`.release/notes.d/<change>.md` and `.release/changelog.d/<change>.md`. New files never conflict;
+`vlr prepare` assembles them (after the `_NEXT` content, in file-name order) and deletes them, and
+`vlr finalize` keeps fragments added after the cut. Details: `vlr help staging`.
 
 ## Commands
 

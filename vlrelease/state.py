@@ -40,6 +40,8 @@ class ReleaseState:
     staged_changelog: list[staging.ChangelogSection] | None = None
     notes_staged: bool = False
     changelog_staged: bool | None = None
+    # Fragment files (repository-relative) the staged docs above were assembled from; `vlr prepare` deletes them.
+    fragment_paths: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     policy: VersionPolicy = field(default_factory=lambda: get_policy(DEFAULT_POLICY), repr=False)
@@ -74,10 +76,85 @@ class ReleaseState:
                 "release_notes": self.notes_staged,
                 "changelog": self.changelog_staged,
                 "title": self.staged_notes.title if self.staged_notes else None,
+                "fragments": list(self.fragment_paths),
             },
             "errors": list(self.errors),
             "warnings": list(self.warnings),
         }
+
+
+@dataclass
+class StagedDocs:
+    notes: staging.StagedNotes | None = None
+    notes_staged: bool = False
+    changelog: list[staging.ChangelogSection] | None = None
+    changelog_staged: bool | None = None
+    fragment_paths: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _read_fragments(config: Config, directory: str, parse, docs: StagedDocs) -> list:
+    parsed = []
+    for path in staging.fragment_files(config.resolve(directory)):
+        relative = f"{directory.rstrip('/')}/{path.name}"
+        docs.fragment_paths.append(relative)
+        try:
+            result = parse(read_text_or_empty(path), source=relative)
+        except staging.StagingError as exc:
+            docs.errors.append(str(exc))
+            continue
+        if result:
+            parsed.append(result)
+    return parsed
+
+
+def load_staged(config: Config) -> StagedDocs:
+    """The staged release docs: the *_NEXT files plus their fragment directories, assembled."""
+    docs = StagedDocs()
+    debian = config.debian is not None
+
+    note_fragments = _read_fragments(config, config.release.notes_fragments, staging.parse_notes_fragment, docs)
+    notes_next = config.resolve(config.release.notes_next)
+    if not notes_next.is_file():
+        docs.errors.append(f"{config.release.notes_next} is missing (run `vlr init` to create the staging files)")
+    notes_next_text = read_text_or_empty(notes_next)
+    docs.notes_staged = staging.is_staged(notes_next_text) or bool(note_fragments)
+    try:
+        base = staging.parse_notes_next(
+            notes_next_text, source=config.release.notes_next, allow_empty_body=bool(note_fragments)
+        )
+        if base is not None and note_fragments:
+            base = staging.StagedNotes(title=base.title, body=staging.assemble_notes(base.body, note_fragments))
+        elif base is None and note_fragments:
+            docs.warnings.append(
+                f"{len(note_fragments)} release-note fragment(s) are staged but {config.release.notes_next} has no "
+                "'# <release title>' line yet; add one before `vlr prepare`"
+            )
+        docs.notes = base
+    except staging.StagingError as exc:
+        docs.errors.append(str(exc))
+
+    changelog_fragments = _read_fragments(
+        config, config.release.changelog_fragments, staging.parse_changelog_next, docs
+    )
+    changelog_next = config.resolve(config.release.changelog_next)
+    changelog_text = read_text_or_empty(changelog_next)
+    if debian:
+        if not changelog_next.is_file():
+            docs.errors.append(f"{config.release.changelog_next} is missing (run `vlr init`)")
+        try:
+            base_sections = staging.parse_changelog_next(changelog_text, source=config.release.changelog_next)
+            docs.changelog = staging.merge_changelog([base_sections, *changelog_fragments])
+        except staging.StagingError as exc:
+            docs.errors.append(str(exc))
+        docs.changelog_staged = staging.is_staged(changelog_text) or bool(changelog_fragments)
+    elif staging.is_staged(changelog_text) or changelog_fragments:
+        docs.errors.append(
+            f"{config.release.changelog_next} (or {config.release.changelog_fragments}) has content, but [debian] is "
+            "not enabled so nothing would publish it; move the content into the release notes or enable [debian]"
+        )
+    return docs
 
 
 def read_release_state(config: Config) -> ReleaseState:
@@ -101,31 +178,14 @@ def read_release_state(config: Config) -> ReleaseState:
         except debchangelog.DebianChangelogError as exc:
             state.errors.append(str(exc))
 
-    notes_next = config.resolve(config.release.notes_next)
-    changelog_next = config.resolve(config.release.changelog_next)
-    if not notes_next.is_file():
-        state.errors.append(f"{config.release.notes_next} is missing (run `vlr init` to create the staging files)")
-    notes_next_text = read_text_or_empty(notes_next)
-    state.notes_staged = staging.is_staged(notes_next_text)
-    try:
-        state.staged_notes = staging.parse_notes_next(notes_next_text, source=config.release.notes_next)
-    except staging.StagingError as exc:
-        state.errors.append(str(exc))
-
-    changelog_text = read_text_or_empty(changelog_next)
-    if config.debian is not None:
-        if not changelog_next.is_file():
-            state.errors.append(f"{config.release.changelog_next} is missing (run `vlr init`)")
-        state.changelog_staged = staging.is_staged(changelog_text)
-        try:
-            state.staged_changelog = staging.parse_changelog_next(changelog_text, source=config.release.changelog_next)
-        except staging.StagingError as exc:
-            state.errors.append(str(exc))
-    elif staging.is_staged(changelog_text):
-        state.errors.append(
-            f"{config.release.changelog_next} has content, but [debian] is not enabled so nothing would publish it; "
-            "move the content into the release notes or enable [debian]"
-        )
+    staged = load_staged(config)
+    state.errors.extend(staged.errors)
+    state.warnings.extend(staged.warnings)
+    state.staged_notes = staged.notes
+    state.notes_staged = staged.notes_staged
+    state.staged_changelog = staged.changelog
+    state.changelog_staged = staged.changelog_staged
+    state.fragment_paths = staged.fragment_paths
 
     if state.errors or version is None:
         state.phase = "invalid"
@@ -144,7 +204,8 @@ def read_release_state(config: Config) -> ReleaseState:
         return state
 
     staged_any = state.notes_staged or bool(state.changelog_staged)
-    staged_complete = state.notes_staged and (state.changelog_staged or not debian)
+    # Complete needs a title: fragments alone stage content but can't name the release.
+    staged_complete = state.staged_notes is not None and (state.changelog_staged or not debian)
     if notes_has:
         if staged_any:
             state.phase = "unbumped"
@@ -169,7 +230,7 @@ def read_release_state(config: Config) -> ReleaseState:
         state.phase = "pending"
     else:
         state.phase = "missing-docs"
-        missing = [config.release.notes_next] if not state.notes_staged else []
+        missing = [config.release.notes_next] if state.staged_notes is None else []
         if debian and not state.changelog_staged:
             missing.append(config.release.changelog_next)
         state.warnings.append(f"{version} is not released yet and staged docs are empty: {', '.join(missing)}")

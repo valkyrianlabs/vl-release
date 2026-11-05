@@ -111,6 +111,8 @@ Repositories that set `policy` should also require a vl-release that knows it:
 | `notes` | `"RELEASE_NOTES.md"` | Release-notes history |
 | `notes_next` | `".release/RELEASE_NOTES_NEXT.md"` | Staged release notes |
 | `changelog_next` | `".release/CHANGELOG_NEXT.md"` | Staged changelog (requires `[debian]`) |
+| `notes_fragments` | `".release/notes.d"` | Per-change release-note fragments (`vlr help staging`) |
+| `changelog_fragments` | `".release/changelog.d"` | Per-change changelog fragments (requires `[debian]`) |
 | `output_dir` | `"release"` | Release assets (gitignore it) |
 | `build_dir` | `"build"` | Isolated build trees (gitignore it) |
 | `test_command` | `[]` | Run by `vlr cut` before tagging |

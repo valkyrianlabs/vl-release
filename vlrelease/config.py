@@ -74,6 +74,10 @@ class ReleaseConfig:
     notes: str = "RELEASE_NOTES.md"
     notes_next: str = ".release/RELEASE_NOTES_NEXT.md"
     changelog_next: str = ".release/CHANGELOG_NEXT.md"
+    # Per-change fragment directories (one new file per pull request, so parallel branches never edit the same
+    # file). Assembled with the *_NEXT files by `vlr prepare`, which then deletes the fragments it promoted.
+    notes_fragments: str = ".release/notes.d"
+    changelog_fragments: str = ".release/changelog.d"
     output_dir: str = "release"
     build_dir: str = "build"
     test_command: tuple[str, ...] = ()
@@ -473,6 +477,13 @@ def parse_config(data: dict[str, Any], *, root: Path, path: Path) -> Config:
         notes_next=_relative_path(release_table.string("notes_next", defaults.notes_next) or "", "release.notes_next"),
         changelog_next=_relative_path(
             release_table.string("changelog_next", defaults.changelog_next) or "", "release.changelog_next"
+        ),
+        notes_fragments=_relative_path(
+            release_table.string("notes_fragments", defaults.notes_fragments) or "", "release.notes_fragments"
+        ),
+        changelog_fragments=_relative_path(
+            release_table.string("changelog_fragments", defaults.changelog_fragments) or "",
+            "release.changelog_fragments",
         ),
         output_dir=_relative_path(release_table.string("output_dir", defaults.output_dir) or "", "release.output_dir"),
         build_dir=_relative_path(release_table.string("build_dir", defaults.build_dir) or "", "release.build_dir"),

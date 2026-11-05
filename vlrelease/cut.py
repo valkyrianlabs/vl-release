@@ -16,13 +16,11 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
 
-from vlrelease import staging
 from vlrelease.config import Config
 from vlrelease.errors import ReleaseError
-from vlrelease.fsutil import read_text_or_empty
 from vlrelease.gitutil import dirty_tracked_paths, git_out, rev, run_git
 from vlrelease.policy import ReleaseVersion
-from vlrelease.state import read_release_state
+from vlrelease.state import read_release_state, load_staged
 from vlrelease.targets import TargetError, replace_version_text
 from vlrelease.versioning import apply_version, require_consistent_version
 
@@ -40,16 +38,17 @@ class CutResult:
 
 
 def _require_staged_docs(config: Config) -> None:
-    problems: list[str] = []
-    try:
-        if staging.parse_notes_next(read_text_or_empty(config.resolve(config.release.notes_next))) is None:
-            problems.append(f"{config.release.notes_next} is empty")
-        if config.debian is not None and not staging.parse_changelog_next(
-            read_text_or_empty(config.resolve(config.release.changelog_next))
-        ):
-            problems.append(f"{config.release.changelog_next} is empty")
-    except staging.StagingError as exc:
-        problems.append(str(exc))
+    staged = load_staged(config)
+    problems: list[str] = list(staged.errors)
+    if not problems:
+        if staged.notes is None:
+            problems.append(
+                f"{config.release.notes_next} has no release title"
+                if staged.notes_staged
+                else f"{config.release.notes_next} is empty (and no release-note fragments are staged)"
+            )
+        if config.debian is not None and not staged.changelog:
+            problems.append(f"{config.release.changelog_next} is empty (and no changelog fragments are staged)")
     if problems:
         raise ReleaseError(
             "Refusing to cut a release whose staged documentation would fail `vlr prepare` in CI: " + "; ".join(problems)
