@@ -41,6 +41,7 @@ class PrepareResult:
     changed: list[str] = field(default_factory=list)
     record: dict[str, str] = field(default_factory=dict)
     preview: dict[str, str] = field(default_factory=dict)
+    removed: list[str] = field(default_factory=list)  # promoted fragment files
 
     def as_dict(self) -> dict:
         return {
@@ -52,6 +53,7 @@ class PrepareResult:
             "debian_version": self.debian_version,
             "date": self.date,
             "changed": self.changed,
+            "removed": self.removed,
             "record": self.record,
         }
 
@@ -132,6 +134,11 @@ def prepare_release(
 
     staged_notes = state.staged_notes
     staged_changelog = state.staged_changelog
+    if state.phase == "missing-docs" and state.notes_staged and staged_notes is None:
+        raise ReleaseError(
+            f"Refusing to prepare {version}: release-note fragments are staged but {config.release.notes_next} has no "
+            "'# <release title>' line. Add the title (the body may stay empty)."
+        )
     if state.phase == "missing-docs":
         missing = [] if staged_notes else [config.release.notes_next]
         if config.debian is not None and not staged_changelog:
@@ -202,6 +209,7 @@ def prepare_release(
         date=when.date().isoformat(),
         changed=[path for path, _ in writes],
         preview={path: content for path, content in writes},
+        removed=list(state.fragment_paths),
     )
     if dry_run:
         return result
@@ -209,6 +217,8 @@ def prepare_release(
     # staged, which `read_release_state` reports as `unbumped`/inconsistent instead of losing text.
     for relative, content in writes:
         atomic_write_text(config.resolve(relative), content)
+    for relative in state.fragment_paths:
+        config.resolve(relative).unlink(missing_ok=True)
     result.record = record_digests(config)
     return result
 

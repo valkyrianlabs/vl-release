@@ -73,6 +73,17 @@ def _identity_args(cwd: Path) -> list[str]:
     return [] if email else ["-c", f"user.name={BOT_NAME}", "-c", f"user.email={BOT_EMAIL}"]
 
 
+def _tracked_under(root: Path, ref: str, directory: str) -> list[str]:
+    completed = run_git(["ls-tree", "-r", "--name-only", "-z", ref, "--", directory.rstrip("/") + "/"], cwd=root, check=False)
+    if completed.returncode != 0:
+        return []
+    names = [item for item in completed.stdout.split("\0") if item]
+    return sorted(
+        name for name in names
+        if name.endswith(".md") and not Path(name).name.startswith(("_", ".")) and Path(name).name != "README.md"
+    )
+
+
 def _show(root: Path, ref: str, path: str) -> str | None:
     completed = run_git(["show", f"{ref}:{path}"], cwd=root, check=False)
     return completed.stdout if completed.returncode == 0 else None
@@ -117,6 +128,13 @@ def finalize_release(
     if config.debian is not None:
         staging_files.append((config.release.changelog_next, staging.CHANGELOG_NEXT_TEMPLATE))
     released_staging = {path: _show(config.root, "HEAD", path) or "" for path, _ in staging_files}
+    # The fragments the release commit carried were promoted into this release; fragments added to the branch after
+    # the cut were not, and must stay.
+    released_fragments = {
+        path: _show(config.root, "HEAD", path) or ""
+        for directory in (config.release.notes_fragments, config.release.changelog_fragments)
+        for path in _tracked_under(config.root, "HEAD", directory)
+    }
 
     for attempt in range(1, attempts + 1):
         run_git(["fetch", "--quiet", remote, branch], cwd=config.root, timeout=300)
@@ -169,9 +187,24 @@ def finalize_release(
                         source=relative,
                     ),
                 )
+            removed: list[str] = []
+            for relative, released in released_fragments.items():
+                path = worktree / relative
+                if not path.is_file():
+                    continue
+                if read_text_or_empty(path) != released:
+                    log(f"{relative} changed on {remote}/{branch} after the cut; keeping it for the next release")
+                    continue
+                if not dry_run:
+                    path.unlink()
+                removed.append(relative)
             if dry_run:
-                return FinalizeResult("dry-run", version, branch, changed=changed)
-            run_git(["add", "--", *changed], cwd=worktree)
+                return FinalizeResult("dry-run", version, branch, changed=changed + removed)
+            if changed:
+                run_git(["add", "--", *changed], cwd=worktree)
+            if removed:
+                run_git(["rm", "-q", "--cached", "--ignore-unmatch", "--", *removed], cwd=worktree)
+            changed += removed
             message = config.release.finalize_commit_message.format(
                 version=version, tag=config.tag_for(version), name=config.project.name
             )

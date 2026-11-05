@@ -14,6 +14,14 @@ RELEASE_NOTES_NEXT.md (user-facing, rendered into RELEASE_NOTES.md and the GitHu
     Markdown body.
 
 Everything inside HTML comments is ignored, so the reset templates are pure guidance comments.
+
+Fragments (`.release/notes.d/*.md`, `.release/changelog.d/*.md`, configurable): one new file per change, so
+parallel branches never edit the same staging file (on GitHub every pull request touching RELEASE_NOTES_NEXT.md
+conflicted with every other). `vlr prepare` assembles them, in file-name order, after the *_NEXT files' content and
+deletes the ones it promoted. A notes fragment is a Markdown chunk that may start with one `## Section` heading
+(fragments naming the same section are grouped under it); a changelog fragment uses the CHANGELOG_NEXT.md syntax. The
+release title stays in RELEASE_NOTES_NEXT.md (written once, at release time); with fragments staged its body may be
+empty. README.md and files starting with `_` or `.` in a fragment directory are ignored.
 """
 
 from __future__ import annotations
@@ -33,6 +41,9 @@ and resets this file to this template.
 Format: one "- " bullet per change (concise, technical). Indent continuation lines.
 Optional "## Section" headings group bullets; if used, every bullet must be under one.
 One level of nested "  - " detail bullets is allowed. Consolidate; don't paste commit logs.
+
+Parallel changes: add a file per change to .release/changelog.d/ (same format) instead of
+editing this file; `vlr prepare` merges them in.
 -->
 """
 
@@ -45,6 +56,10 @@ history (and the GitHub release) and resets this file to this template.
 Format: the first line is "# <release title>" WITHOUT a version number (vlr adds it).
 Everything after the title is the Markdown release body. Describe the resulting behavior
 for users and operators; keep it representative of what actually ships.
+
+Parallel changes: add a file per change to .release/notes.d/ (and .release/changelog.d/)
+instead of editing this file; `vlr prepare` appends them below this body. The title here
+is still required; the body may then be empty.
 -->
 """
 
@@ -138,8 +153,12 @@ def parse_changelog_next(text: str, *, source: str = "CHANGELOG_NEXT.md") -> lis
     return sections
 
 
-def parse_notes_next(text: str, *, source: str = "RELEASE_NOTES_NEXT.md") -> StagedNotes | None:
-    """Parse staged release notes. Returns None when the file holds no content."""
+def parse_notes_next(
+    text: str, *, source: str = "RELEASE_NOTES_NEXT.md", allow_empty_body: bool = False
+) -> StagedNotes | None:
+    """Parse staged release notes. Returns None when the file holds no content.
+
+    allow_empty_body: the title alone is enough (release-note fragments supply the body)."""
     content = strip_comments(text).strip("\n")
     if not content.strip():
         return None
@@ -158,6 +177,8 @@ def parse_notes_next(text: str, *, source: str = "RELEASE_NOTES_NEXT.md") -> Sta
         )
     body = "\n".join(lines[first_index + 1 :]).strip("\n").rstrip()
     if not body.strip():
+        if allow_empty_body:
+            return StagedNotes(title=title, body="")
         raise StagingError(f"{source}: the release body (text after the title) is empty")
     if is_placeholder(body):
         raise StagingError(f"{source}: the release body is a placeholder")
@@ -171,3 +192,109 @@ def parse_notes_next(text: str, *, source: str = "RELEASE_NOTES_NEXT.md") -> Sta
 
 def is_staged(text: str) -> bool:
     return has_content(text)
+
+
+# --- fragments -------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NotesFragment:
+    source: str
+    section: str | None
+    body: str
+
+
+def fragment_files(directory) -> list:
+    """The fragment files of `directory` (a Path), in name order. Missing directory: none."""
+    if not directory.is_dir():
+        return []
+    return sorted(
+        (path for path in directory.iterdir()
+         if path.is_file() and path.suffix == ".md" and path.name != "README.md" and not path.name.startswith(("_", "."))),
+        key=lambda path: path.name,
+    )
+
+
+def parse_notes_fragment(text: str, *, source: str) -> NotesFragment | None:
+    """A release-notes fragment: Markdown, optionally starting with one `## Section` heading. None when empty."""
+    content = strip_comments(text).strip("\n")
+    if not content.strip():
+        return None
+    lines = content.split("\n")
+    first = next(index for index, line in enumerate(lines) if line.strip())
+    section = None
+    if match := _SECTION.match(lines[first].strip()):
+        section = match.group("text").strip()
+        lines = lines[first + 1 :]
+    else:
+        lines = lines[first:]
+    body = "\n".join(lines).strip("\n").rstrip()
+    if not body.strip():
+        raise StagingError(f"{source}: the fragment has a section heading but no text")
+    if is_placeholder(body) or (section is not None and is_placeholder(section)):
+        raise StagingError(f"{source}: the fragment is a placeholder")
+    for level, heading in headings(body):
+        if level == 1:
+            raise StagingError(f"{source}: a fragment may not use a level-1 heading ('# {heading}')")
+        if level == 2:
+            raise StagingError(
+                f"{source}: only the first line of a fragment may be a '## Section' heading; found '## {heading}' later"
+            )
+        if level == 6:
+            raise StagingError(f"{source}: level-6 headings cannot nest under the release heading; use level 5 or less")
+    return NotesFragment(source=source, section=section, body=body)
+
+
+def assemble_notes(base_body: str, fragments: list[NotesFragment]) -> str:
+    """The release body: the RELEASE_NOTES_NEXT.md body, then fragments without a section, then each section's
+    fragments under its `## Section` heading (sections in order of first appearance; an existing `## Section` in
+    the base body is extended in place)."""
+    loose = [fragment.body for fragment in fragments if fragment.section is None]
+    grouped: dict[str, list[str]] = {}
+    for fragment in fragments:
+        if fragment.section is not None:
+            grouped.setdefault(fragment.section, []).append(fragment.body)
+
+    # Split the base body at its level-2 headings so a fragment section can join an existing one.
+    preamble: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    for line in base_body.split("\n") if base_body.strip() else []:
+        if match := _SECTION.match(line.strip()):
+            sections.append((match.group("text").strip(), []))
+        elif sections:
+            sections[-1][1].append(line)
+        else:
+            preamble.append(line)
+
+    def block(lines: list[str]) -> str:
+        return "\n".join(lines).strip("\n")
+
+    parts: list[str] = []
+    if block(preamble):
+        parts.append(block(preamble))
+    parts.extend(loose)
+    for heading, lines in sections:
+        chunk = [part for part in (block(lines), *grouped.pop(heading, [])) if part]
+        parts.append(f"## {heading}\n\n" + "\n\n".join(chunk) if chunk else f"## {heading}")
+    for heading, bodies in grouped.items():
+        parts.append(f"## {heading}\n\n" + "\n\n".join(bodies))
+    return "\n\n".join(parts).rstrip()
+
+
+def merge_changelog(lists: list[list[ChangelogSection]]) -> list[ChangelogSection]:
+    """Merge staged changelog sections: bullets of the same section heading are combined, in order; unsectioned
+    bullets come first. Mixing unsectioned and sectioned bullets across sources is refused (as within one file)."""
+    merged: dict[str | None, ChangelogSection] = {}
+    for sections in lists:
+        for section in sections:
+            target = merged.setdefault(section.heading, ChangelogSection(heading=section.heading))
+            target.items.extend(section.items)
+    if None in merged and len(merged) > 1:
+        raise StagingError(
+            "the staged changelog mixes bullets without a section and '## Section' headings across "
+            "CHANGELOG_NEXT.md and the fragments; put every bullet under a section"
+        )
+    result = [merged[None]] if None in merged else []
+    result.extend(section for heading, section in merged.items() if heading is not None)
+    return result
+

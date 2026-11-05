@@ -6,6 +6,8 @@
 |---|---|---|
 | `.release/CHANGELOG_NEXT.md` | the agent, while working | package-facing changes for the next release (when `[debian]` is enabled) |
 | `.release/RELEASE_NOTES_NEXT.md` | the agent, while working | the user-facing release notes for the next release |
+| `.release/notes.d/*.md` | one new file per change | release-note fragments, assembled into the notes |
+| `.release/changelog.d/*.md` | one new file per change | changelog fragments, merged into the changelog |
 | `debian/changelog` | `vlr prepare` only | published Debian history |
 | `RELEASE_NOTES.md` | `vlr prepare` only | published release-notes history |
 
@@ -43,6 +45,26 @@ Markdown body: paragraphs, `##` sections, lists, code blocks.
 - The body (everything after the title) must not be empty and may not use `#` or `######`
   headings.
 - Describe what users and operators get; keep it representative of what actually ships.
+
+## Fragments: one file per change (use these on shared branches)
+
+Every branch that edits `RELEASE_NOTES_NEXT.md` or `CHANGELOG_NEXT.md` conflicts with every other branch that does,
+and GitHub ignores `merge=union`, so with several pull requests open each merge re-dirties the rest. Fragments avoid
+that: each change adds **new files** that no other branch touches.
+
+- `.release/notes.d/<name>.md`: user-facing Markdown for this change. It may start with one `## Section` heading;
+  fragments naming the same section are grouped under it (joining a `## Section` the body of
+  `RELEASE_NOTES_NEXT.md` already has). No other `#`/`##` headings, no placeholders.
+- `.release/changelog.d/<name>.md` (with `[debian]`): the same bullet format as `CHANGELOG_NEXT.md`; bullets of the
+  same `## Section` are merged.
+- Name files after the change, e.g. `316-offline-startup.md`; they are assembled in file-name order after the
+  `_NEXT` files' content. `README.md` and names starting with `_` or `.` are ignored.
+- The release **title** still comes from line 1 of `RELEASE_NOTES_NEXT.md`, written once when the release is
+  planned; with fragments staged, its body may be empty. Fragments without a title leave the release in
+  `missing-docs` (`vlr status` says so) and `vlr prepare` refuses.
+- `vlr prepare` deletes the fragments it promoted; `vlr finalize` removes the released ones from the release
+  branch and keeps fragments added after the cut for the next release.
+- Directories are configurable: `[release] notes_fragments`, `changelog_fragments`.
 
 ## Maintaining them well
 
